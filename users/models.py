@@ -22,11 +22,11 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
 
     class Role(models.TextChoices):
-        SUBKONTRAKTOR       = 'subkontraktor',      'Subkontraktor'
-        SUPERVISOR_LAPANGAN = 'supervisor_lapangan', 'Supervisor Lapangan / Koordinator Supervisor'
-        HSE_OFFICER         = 'hse_officer',         'HSE Officer'
-        HSE_COORDINATOR     = 'hse_coordinator',     'HSE Coordinator'
-        PROJECT_MANAGER     = 'project_manager',     'Project Manager'
+        SUBCONTRACTOR   = 'subcontractor',  'Subkontraktor'
+        SUPERVISOR      = 'supervisor',     'Supervisor Lapangan / Koordinator Supervisor'
+        HSE_OFFICER     = 'hse_officer',    'HSE Officer'
+        HSE_COORDINATOR = 'hse_coordinator','HSE Coordinator'
+        PROJECT_MANAGER = 'project_manager','Project Manager'
 
     email       = models.EmailField(unique=True)
     full_name   = models.CharField(max_length=150)
