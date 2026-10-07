@@ -19,9 +19,9 @@ class HIRAGroupInline(admin.TabularInline):
 
 @admin.register(HIRADocument)
 class HIRADocumentAdmin(admin.ModelAdmin):
-    list_display = ['document_number', 'title', 'project', 'status', 'created_by', 'document_date']
+    list_display = ['document_number', 'work_package', 'project', 'status', 'created_by', 'document_date']
     list_filter = ['status', 'project']
-    search_fields = ['document_number', 'title']
+    search_fields = ['document_number', 'work_package']
     list_select_related = ['project', 'created_by']
     readonly_fields = ['status', 'submission_round', 'created_by', 'cancelled_by',
                        'cancelled_at', 'created_at', 'updated_at']

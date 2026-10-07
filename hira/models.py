@@ -23,7 +23,8 @@ class HIRADocument(models.Model):
         CANCELLED       = 'cancelled',       'Dibatalkan'
 
     project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='hira_documents')
-    title = models.CharField(max_length=255)
+    work_package = models.CharField(max_length=255)   # Tahapan Pekerjaan
+    work_area    = models.CharField(max_length=255)   # Proyek / Area Kerja
     # Entered manually by HSE Officer / Coordinator; the client's office code, not unique.
     document_number = models.CharField(max_length=100, blank=True)
     document_date = models.DateField(default=timezone.localdate)
@@ -50,7 +51,7 @@ class HIRADocument(models.Model):
         verbose_name_plural = 'HIRA Documents'
 
     def __str__(self):
-        return f'{self.document_number or "(no number)"} — {self.title}'
+        return f'{self.document_number or "(no number)"} — {self.work_package}'
 
 
 class HIRAGroup(models.Model):
@@ -94,6 +95,7 @@ class HIRAActivity(models.Model):
     risk_impact           = models.TextField()                               # Resiko/Dampak Lingkungan
     applicable_regulation = models.TextField(blank=True)                     # Regulasi yang Berlaku
     existing_controls     = models.TextField(blank=True)                     # Pengendalian Awal
+    control_category      = models.CharField(max_length=100, blank=True)     # e.g. "ADM, APD"
     opportunity           = models.TextField(blank=True)                     # Peluang
 
     # Initial risk (Resiko Awal). Severity = 'R' on the form, Likelihood = 'L'.

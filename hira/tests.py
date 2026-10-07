@@ -1,5 +1,6 @@
 from django.test import SimpleTestCase
-from .risk import calculate
+
+from .risk import ACCEPTABLE_MAX_RT, calculate
 
 
 class RiskCalculationTests(SimpleTestCase):
@@ -16,6 +17,26 @@ class RiskCalculationTests(SimpleTestCase):
                 self.assertEqual((got[0], got[1]), (score, cat))
 
     def test_acceptable_gate(self):
-        self.assertTrue(calculate(2, 3)[2])    # Rt 6, now the highest acceptable
-        self.assertFalse(calculate(2, 4)[2])   # Rt 8
-        self.assertFalse(calculate(5, 5)[2])   # Rt 25
+        self.assertEqual(ACCEPTABLE_MAX_RT, 4)
+        self.assertTrue(calculate(2, 2)[2])     # Rt 4: highest acceptable
+        self.assertFalse(calculate(1, 5)[2])    # Rt 5
+        self.assertFalse(calculate(2, 3)[2])    # Rt 6
+        self.assertFalse(calculate(5, 5)[2])    # Rt 25
+
+    def test_sample_penyimpanan_bekisting(self):
+        """Values from the company's filled sample: (severity, likelihood) -> expected."""
+        initial = [
+            ((4, 2), (8, 'M', False)),
+            ((3, 3), (9, 'M', False)),
+            ((3, 3), (9, 'M', False)),
+            ((4, 3), (12, 'T', False)),
+        ]
+        residual = [
+            ((2, 1), (2, 'R', True)),
+            ((2, 1), (2, 'R', True)),
+            ((2, 1), (2, 'R', True)),
+            ((2, 2), (4, 'R', True)),
+        ]
+        for (s, l), expected in initial + residual:
+            with self.subTest(s=s, l=l):
+                self.assertEqual(calculate(l, s), expected)
