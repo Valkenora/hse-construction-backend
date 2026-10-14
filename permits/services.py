@@ -5,6 +5,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from audit.services import Action, log_event
 from hira.models import HIRADocument
 from hira.services import InvalidTransition
+from projects.guards import ensure_active, ensure_creator_can_work
 from projects.models import ProjectMember
 from users.models import User
 from . import routing
@@ -45,6 +46,7 @@ def lock_for_edit(pk, user):
         raise PermissionDenied('Only the creator can edit this permit.')
     if permit.status not in EDITABLE_STATUSES:
         raise InvalidTransition(f'Permit is locked while its status is "{permit.status}".')
+    ensure_creator_can_work(permit.project_id, user)
     return permit
 
 
@@ -66,6 +68,7 @@ def submit(permit, user, request):
         raise PermissionDenied('Only the creator can submit this permit.')
     if permit.status not in EDITABLE_STATUSES:
         raise InvalidTransition(f'Cannot submit a permit with status "{permit.status}".')
+    ensure_creator_can_work(permit.project_id, user)
 
     activity = permit.hira_activity
     hira = activity.group.hira_document
@@ -73,6 +76,8 @@ def submit(permit, user, request):
         raise ValidationError({'hira_activity': 'The referenced HIRA is not approved.'})
     if hira.project_id != permit.project_id:
         raise ValidationError({'hira_activity': 'The HIRA belongs to a different project.'})
+    if hira.created_by_id != permit.created_by_id:
+        raise ValidationError({'hira_activity': 'A permit can only use a HIRA created by the same subcontractor.'})
     if errors := incomplete_fields(permit):
         raise ValidationError(errors)
 
@@ -96,6 +101,7 @@ def decide(permit, user, request, decision, remarks=''):
         raise PermissionDenied(f'This step can only be done by: {role}.')
     if role in PROJECT_SCOPED and not _is_member(permit.project_id, user):
         raise PermissionDenied('You are not assigned to this project.')
+    ensure_active(permit.project_id)
 
     remarks = (remarks or '').strip()
     if decision == PermitApproval.Decision.APPROVED:
@@ -136,6 +142,7 @@ def request_close(permit, user, request, evaluation):
         raise PermissionDenied('Only the creator can request closure.')
     if permit.status != S.APPROVED:
         raise InvalidTransition('Only an approved permit can be closed.')
+    ensure_creator_can_work(permit.project_id, user)
     permit.post_work_evaluation = evaluation
     permit.close_requested_at = timezone.now()
     permit.status = S.PENDING_CLOSE
@@ -149,6 +156,7 @@ def confirm_close(permit, user, request):
     permit = _lock(permit.pk)
     if permit.status != S.PENDING_CLOSE:
         raise InvalidTransition('No closure request is pending.')
+    ensure_active(permit.project_id)
     permit.status, permit.closed_by, permit.closed_at = S.CLOSED, user, timezone.now()
     permit.save(update_fields=['status', 'closed_by', 'closed_at', 'updated_at'])
     log_event(permit, PAction.CLOSED, request=request)
@@ -160,9 +168,20 @@ def set_number(permit, user, request, number):
     permit = _lock(permit.pk)
     if permit.status == S.CANCELLED:
         raise InvalidTransition('A cancelled permit cannot be changed.')
+    ensure_active(permit.project_id)
     old = permit.document_number
     permit.document_number = number
     permit.save(update_fields=['document_number', 'updated_at'])
     log_event(permit, Action.UPDATED, request=request,
               remarks=f'document_number: "{old}" -> "{number}"')
     return permit
+
+
+def cancel_for_hira(hira, user, request, reason):
+    """Cancel every permit that rests on this HIRA and is not already closed or cancelled.
+    Called from hira.services.cancel inside its transaction. Returns how many were cancelled."""
+    permits = (Permit.objects.filter(hira_activity__group__hira_document=hira)
+               .exclude(status__in=FINAL_STATUSES).order_by('pk'))
+    for permit in permits:
+        cancel(permit, user, request, f'HIRA #{hira.pk} was cancelled: {reason}')
+    return len(permits)

@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from audit.services import Action, log_event
+from core.mixins import LockedPartialUpdateMixin
 from users.models import User
 from users.permissions import HasRole
 from . import services
@@ -21,7 +22,7 @@ R = User.Role
 WRITE_METHODS = ['get', 'post', 'patch', 'delete', 'head', 'options']  # no PUT
 
 
-class HIRADocumentViewSet(viewsets.ModelViewSet):
+class HIRADocumentViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
     http_method_names = WRITE_METHODS
 
     def get_permissions(self):
@@ -71,10 +72,8 @@ class HIRADocumentViewSet(viewsets.ModelViewSet):
             self.get_queryset().get(pk=doc.pk), context=self.get_serializer_context())
         return Response(detail.data, status=status.HTTP_201_CREATED)
 
-    @transaction.atomic
-    def perform_update(self, serializer):
-        services.lock_for_edit(serializer.instance.pk, self.request.user)
-        log_event(serializer.save(), Action.UPDATED, request=self.request)
+    def lock_for_update(self, instance):
+        services.lock_for_edit(instance.pk, self.request.user)
 
     @transaction.atomic
     def perform_destroy(self, instance):
@@ -121,7 +120,7 @@ class HIRADocumentViewSet(viewsets.ModelViewSet):
         return self._detail()
 
 
-class HIRAContentViewSet(viewsets.ModelViewSet):
+class HIRAContentViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
     """Shared edit-lock + audit logic for groups and activities."""
     http_method_names = WRITE_METHODS
 
@@ -141,10 +140,8 @@ class HIRAContentViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.instance = self.create_content(dict(serializer.validated_data))
 
-    @transaction.atomic
-    def perform_update(self, serializer):
-        services.lock_for_edit(self.doc_id_of(serializer.instance), self.request.user)
-        log_event(serializer.save(), Action.UPDATED, request=self.request)
+    def lock_for_update(self, instance):
+        services.lock_for_edit(self.doc_id_of(instance), self.request.user)
 
     @transaction.atomic
     def perform_destroy(self, instance):

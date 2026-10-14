@@ -56,7 +56,8 @@ class HIRADocumentAdmin(admin.ModelAdmin):
 
     def get_readonly_fields(self, request, obj=None):
         names = [f.name for f in self.model._meta.concrete_fields if f.name != 'id']
-        if obj is not None and obj.status != HIRADocument.Status.CANCELLED:
+        if (obj is not None and obj.status != HIRADocument.Status.CANCELLED
+                and obj.project.is_active):
             names = [n for n in names if n not in self.editable_fields]
         return names
 

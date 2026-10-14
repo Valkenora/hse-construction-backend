@@ -78,11 +78,18 @@ class PermitDetailSerializer(PermitListSerializer):
         if ptype not in ENABLED_TYPES:
             raise serializers.ValidationError({'permit_type': 'This permit type is not available yet.'})
 
-        hira = activity.group.hira_document
-        if hira.status != HIRADocument.Status.APPROVED:
-            raise serializers.ValidationError({'hira_activity': 'The referenced HIRA is not approved.'})
-        if hira.project_id != project.id:
-            raise serializers.ValidationError({'hira_activity': 'The HIRA belongs to a different project.'})
+        # The HIRA rules run when a HIRA is being chosen (create, or PATCH that changes it).
+        # An edit that leaves the HIRA alone doesn't re-check it: submit and approve do.
+        if inst is None or ('hira_activity' in attrs and attrs['hira_activity'] != inst.hira_activity):
+            hira = activity.group.hira_document
+            if hira.status != HIRADocument.Status.APPROVED:
+                raise serializers.ValidationError({'hira_activity': 'The referenced HIRA is not approved.'})
+            if hira.project_id != project.id:
+                raise serializers.ValidationError({'hira_activity': 'The HIRA belongs to a different project.'})
+            owner_id = inst.created_by_id if inst else self.context['request'].user.id
+            if hira.created_by_id != owner_id:
+                raise serializers.ValidationError(
+                    {'hira_activity': 'You can only use a HIRA that you created.'})
 
         form = FORMS[ptype]
         errors = {}

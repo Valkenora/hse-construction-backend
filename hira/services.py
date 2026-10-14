@@ -3,6 +3,7 @@ from django.utils import timezone
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 
 from audit.services import Action, log_event
+from projects.guards import ensure_active, ensure_creator_can_work
 from projects.models import ProjectMember
 from users.models import User
 from .models import HIRAActivity, HIRAApproval, HIRADocument, HIRAGroup
@@ -38,6 +39,7 @@ def lock_for_edit(doc_id, user):
         raise PermissionDenied('Only the creator can edit this HIRA.')
     if doc.status not in EDITABLE_STATUSES:
         raise InvalidTransition(f'HIRA is locked while its status is "{doc.status}".')
+    ensure_creator_can_work(doc.project_id, user)
     return doc
 
 
@@ -85,6 +87,7 @@ def submit(doc, user, request):
         raise PermissionDenied('Only the creator can submit this HIRA.')
     if doc.status not in EDITABLE_STATUSES:
         raise InvalidTransition(f'Cannot submit a HIRA with status "{doc.status}".')
+    ensure_creator_can_work(doc.project_id, user)
     if not HIRAActivity.objects.filter(group__hira_document=doc).exists():
         raise ValidationError({'detail': 'Add at least one activity before submitting.'})
     empty = list(HIRAGroup.objects.filter(hira_document=doc, activities__isnull=True)
@@ -113,6 +116,7 @@ def decide(doc, user, request, decision, remarks=''):
     if role == R.PROJECT_MANAGER and not ProjectMember.objects.filter(
             project_id=doc.project_id, user=user).exists():
         raise PermissionDenied('You are not assigned to this project.')
+    ensure_active(doc.project_id)
 
     remarks = (remarks or '').strip()
     if decision == HIRAApproval.Decision.APPROVED:
@@ -147,7 +151,12 @@ def cancel(doc, user, request, reason):
     doc.cancelled_at = timezone.now()
     doc.cancel_reason = reason
     doc.save(update_fields=['status', 'cancelled_by', 'cancelled_at', 'cancel_reason', 'updated_at'])
-    log_event(doc, Action.CANCELLED, request=request, remarks=reason)
+    # A permit rests on this HIRA, so every permit that is not already closed or cancelled
+    # is cancelled with it, in the same transaction (each one locked and audited).
+    from permits.services import cancel_for_hira   # local import: permits imports hira
+    n = cancel_for_hira(doc, user, request, reason)
+    log_event(doc, Action.CANCELLED, request=request,
+              remarks=reason + (f' ({n} permit(s) cancelled)' if n else ''))
     return doc
 
 
@@ -156,6 +165,7 @@ def set_number(doc, user, request, number):
     doc = _lock(doc.pk)
     if doc.status == S.CANCELLED:
         raise InvalidTransition('A cancelled HIRA cannot be changed.')
+    ensure_active(doc.project_id)
     old = doc.document_number
     doc.document_number = number
     doc.save(update_fields=['document_number', 'updated_at'])

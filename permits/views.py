@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from audit.services import Action, log_event
+from core.mixins import LockedPartialUpdateMixin
 from hira.serializers import CancelSerializer, RemarksSerializer, SetNumberSerializer
 from users.models import User
 from users.permissions import HasRole
@@ -19,7 +20,7 @@ R = User.Role
 WRITE_METHODS = ['get', 'post', 'patch', 'delete', 'head', 'options']  # no PUT
 
 
-class PermitViewSet(viewsets.ModelViewSet):
+class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
     http_method_names = WRITE_METHODS
 
     def get_permissions(self):
@@ -64,10 +65,8 @@ class PermitViewSet(viewsets.ModelViewSet):
         permit = serializer.save(created_by=self.request.user)
         log_event(permit, Action.CREATED, request=self.request)
 
-    @transaction.atomic
-    def perform_update(self, serializer):
-        services.lock_for_edit(serializer.instance.pk, self.request.user)
-        log_event(serializer.save(), Action.UPDATED, request=self.request)
+    def lock_for_update(self, instance):
+        services.lock_for_edit(instance.pk, self.request.user)
 
     @transaction.atomic
     def perform_destroy(self, instance):
