@@ -5,7 +5,7 @@ from rest_framework.exceptions import APIException, PermissionDenied, Validation
 from audit.services import Action, log_event
 from projects.models import ProjectMember
 from users.models import User
-from .models import HIRAActivity, HIRAApproval, HIRADocument
+from .models import HIRAActivity, HIRAApproval, HIRADocument, HIRAGroup
 from .risk import ACCEPTABLE_MAX_RT
 
 S = HIRADocument.Status
@@ -41,6 +41,43 @@ def lock_for_edit(doc_id, user):
     return doc
 
 
+# --- content writes -------------------------------------------------------------
+# add_group / add_activity are the ONLY code that creates groups and activities,
+# whether they arrive one by one (granular endpoints) or nested inside a document.
+# Both write the row and its audit entry together. The caller owns the transaction
+# (and, for existing documents, the row lock from lock_for_edit).
+
+def add_group(doc, data, request):
+    group = HIRAGroup.objects.create(hira_document=doc, **data)
+    log_event(group, Action.CREATED, request=request)
+    return group
+
+
+def add_activity(group, data, request):
+    # objects.create() runs HIRAActivity.save(), which computes scores and categories.
+    # Never use bulk_create here: it skips save() and would leave the scores empty.
+    activity = HIRAActivity.objects.create(group=group, **data)
+    log_event(activity, Action.CREATED, request=request)
+    return activity
+
+
+@transaction.atomic
+def create_document(user, request, data):
+    """Create a document with its groups and activities in ONE transaction.
+    Any failure rolls back every row and every audit entry."""
+    data = dict(data)
+    groups = data.pop('groups', [])
+    doc = HIRADocument.objects.create(created_by=user, **data)
+    log_event(doc, Action.CREATED, request=request)
+    for group_data in groups:
+        group_data = dict(group_data)
+        activities = group_data.pop('activities', [])
+        group = add_group(doc, group_data, request)
+        for activity_data in activities:
+            add_activity(group, activity_data, request)
+    return doc
+
+
 @transaction.atomic
 def submit(doc, user, request):
     doc = _lock(doc.pk)
@@ -50,6 +87,11 @@ def submit(doc, user, request):
         raise InvalidTransition(f'Cannot submit a HIRA with status "{doc.status}".')
     if not HIRAActivity.objects.filter(group__hira_document=doc).exists():
         raise ValidationError({'detail': 'Add at least one activity before submitting.'})
+    empty = list(HIRAGroup.objects.filter(hira_document=doc, activities__isnull=True)
+                 .values_list('location_function', flat=True))
+    if empty:
+        raise ValidationError({'detail': (
+            'Every group needs at least one activity. Empty: ' + ', '.join(empty) + '.')})
 
     resubmission = doc.status == S.REJECTED
     doc.submission_round += 1

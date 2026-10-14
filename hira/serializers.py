@@ -3,8 +3,13 @@ from rest_framework import serializers
 
 from projects.models import ProjectMember
 from users.models import User
+from . import services
 from .models import HIRAActivity, HIRAApproval, HIRADocument, HIRAGroup
 from .services import DECISION_STEPS, EDITABLE_STATUSES
+
+# Upper bounds for one nested create request (the paper form fits on a single page).
+MAX_GROUPS = 50
+MAX_ACTIVITIES_PER_GROUP = 100
 
 
 class UserBriefSerializer(serializers.ModelSerializer):
@@ -69,7 +74,7 @@ class HIRADocumentListSerializer(serializers.ModelSerializer):
         model = HIRADocument
         fields = [
             'id', 'project', 'project_name', 'work_package', 'work_area',
-            'document_number', 'document_date', 'external_procedure_url',
+            'document_number', 'document_date',
             'status', 'submission_round', 'created_by',
             'has_unacceptable_residual', 'created_at', 'updated_at',
         ]
@@ -89,6 +94,45 @@ class HIRADocumentListSerializer(serializers.ModelSerializer):
         return project
 
 
+# --- nested create (POST /hira/documents/ only) ---
+class HIRAActivityInputSerializer(serializers.ModelSerializer):
+    """One activity inside a nested create. No `group`: its parent supplies it.
+    Scores and categories are not fields here, so client-sent values are ignored."""
+
+    class Meta:
+        model = HIRAActivity
+        fields = [
+            'order', 'activity_name', 'activity_type',
+            'potential_hazard', 'risk_impact', 'applicable_regulation',
+            'existing_controls', 'control_category', 'opportunity',
+            'initial_severity', 'initial_likelihood',
+            'residual_severity', 'residual_likelihood',
+        ]
+
+
+class HIRAGroupInputSerializer(serializers.ModelSerializer):
+    activities = HIRAActivityInputSerializer(
+        many=True, required=False, max_length=MAX_ACTIVITIES_PER_GROUP)
+
+    class Meta:
+        model = HIRAGroup
+        fields = ['location_function', 'order', 'activities']
+
+
+class HIRADocumentCreateSerializer(HIRADocumentListSerializer):
+    """Header plus optional groups -> activities. Saved by services.create_document
+    in a single transaction. `groups` is optional, so a header-only create still works."""
+    groups = HIRAGroupInputSerializer(many=True, required=False, max_length=MAX_GROUPS)
+
+    class Meta(HIRADocumentListSerializer.Meta):
+        fields = ['project', 'work_package', 'work_area', 'document_date', 'groups']
+        read_only_fields = []
+
+    def create(self, validated_data):
+        request = self.context['request']
+        return services.create_document(request.user, request, validated_data)
+
+
 class HIRADocumentDetailSerializer(HIRADocumentListSerializer):
     groups = HIRAGroupSerializer(many=True, read_only=True)
     approvals = HIRAApprovalSerializer(many=True, read_only=True)
@@ -104,6 +148,15 @@ class HIRADocumentDetailSerializer(HIRADocumentListSerializer):
         ]
         read_only_fields = HIRADocumentListSerializer.Meta.read_only_fields + [
             'cancelled_at', 'cancel_reason']
+
+    def to_internal_value(self, data):
+        # `groups` is read-only here. Without this guard a PATCH carrying `groups`
+        # would "succeed" and silently drop them.
+        if 'groups' in data:
+            raise serializers.ValidationError({'groups': [
+                'Groups cannot be changed through this endpoint. '
+                'Use /hira/groups/ and /hira/activities/.']})
+        return super().to_internal_value(data)
 
     def get_project_info(self, obj):
         p = obj.project

@@ -1,6 +1,6 @@
 from django.db import transaction
 from django.db.models import Exists, OuterRef
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -12,8 +12,9 @@ from . import services
 from .models import HIRAActivity, HIRAApproval, HIRADocument, HIRAGroup
 from .selectors import visible_documents
 from .serializers import (
-    CancelSerializer, HIRAActivitySerializer, HIRADocumentDetailSerializer,
-    HIRADocumentListSerializer, HIRAGroupSerializer, RemarksSerializer, SetNumberSerializer,
+    CancelSerializer, HIRAActivitySerializer, HIRADocumentCreateSerializer,
+    HIRADocumentDetailSerializer, HIRADocumentListSerializer, HIRAGroupSerializer,
+    RemarksSerializer, SetNumberSerializer,
 )
 
 R = User.Role
@@ -35,7 +36,11 @@ class HIRADocumentViewSet(viewsets.ModelViewSet):
         return [HasRole(*roles)] if roles else [IsAuthenticated()]
 
     def get_serializer_class(self):
-        return HIRADocumentListSerializer if self.action == 'list' else HIRADocumentDetailSerializer
+        if self.action == 'list':
+            return HIRADocumentListSerializer
+        if self.action == 'create':
+            return HIRADocumentCreateSerializer
+        return HIRADocumentDetailSerializer
 
     def get_queryset(self):
         qs = (visible_documents(self.request.user)
@@ -55,10 +60,16 @@ class HIRADocumentViewSet(viewsets.ModelViewSet):
     def _detail(self):
         return Response(self.get_serializer(self.get_object()).data)
 
-    @transaction.atomic
-    def perform_create(self, serializer):
-        doc = serializer.save(created_by=self.request.user)
-        log_event(doc, Action.CREATED, request=self.request)
+    def create(self, request, *args, **kwargs):
+        """Header plus optional groups -> activities, saved in one transaction."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        doc = serializer.save()   # HIRADocumentCreateSerializer -> services.create_document
+        # Re-read through the queryset so the response carries the same annotations and
+        # prefetches as every other detail response.
+        detail = HIRADocumentDetailSerializer(
+            self.get_queryset().get(pk=doc.pk), context=self.get_serializer_context())
+        return Response(detail.data, status=status.HTTP_201_CREATED)
 
     @transaction.atomic
     def perform_update(self, serializer):
@@ -119,7 +130,8 @@ class HIRAContentViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return [HasRole(R.SUBCONTRACTOR)]
 
-    def doc_id_from_data(self, data):
+    def create_content(self, data):
+        """Lock the document, then create through the shared services."""
         raise NotImplementedError
 
     def doc_id_of(self, instance):
@@ -127,8 +139,7 @@ class HIRAContentViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        services.lock_for_edit(self.doc_id_from_data(serializer.validated_data), self.request.user)
-        log_event(serializer.save(), Action.CREATED, request=self.request)
+        serializer.instance = self.create_content(dict(serializer.validated_data))
 
     @transaction.atomic
     def perform_update(self, serializer):
@@ -153,8 +164,9 @@ class HIRAGroupViewSet(HIRAContentViewSet):
             qs = qs.filter(hira_document_id=doc)
         return qs
 
-    def doc_id_from_data(self, data):
-        return data['hira_document'].pk
+    def create_content(self, data):
+        doc = services.lock_for_edit(data.pop('hira_document').pk, self.request.user)
+        return services.add_group(doc, data, self.request)
 
     def doc_id_of(self, instance):
         return instance.hira_document_id
@@ -173,8 +185,10 @@ class HIRAActivityViewSet(HIRAContentViewSet):
             qs = qs.filter(group__hira_document_id=p['hira_document'])
         return qs
 
-    def doc_id_from_data(self, data):
-        return data['group'].hira_document_id
+    def create_content(self, data):
+        group = data.pop('group')
+        services.lock_for_edit(group.hira_document_id, self.request.user)
+        return services.add_activity(group, data, self.request)
 
     def doc_id_of(self, instance):
         return instance.group.hira_document_id

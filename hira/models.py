@@ -28,7 +28,6 @@ class HIRADocument(models.Model):
     # Entered manually by HSE Officer / Coordinator; the client's office code, not unique.
     document_number = models.CharField(max_length=100, blank=True)
     document_date = models.DateField(default=timezone.localdate)
-    external_procedure_url = models.URLField(blank=True)  # PRD: link to external SOP
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     # Increments on every (re)submission so approvals can be tied to a round.
@@ -178,6 +177,11 @@ class HIRAApproval(models.Model):
             models.CheckConstraint(
                 condition=Q(decision='approved') | ~Q(remarks=''),
                 name='hira_rejection_requires_remarks',
+            ),
+            # Each step decides at most once per submission round (same rule as permits).
+            models.UniqueConstraint(
+                fields=['hira_document', 'step', 'submission_round'],
+                name='uniq_hira_decision_per_step_round',
             ),
         ]
 
