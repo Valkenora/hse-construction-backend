@@ -54,9 +54,12 @@ class HIRADocument(models.Model):
 
 
 class HIRAGroup(models.Model):
-    """Form column 'Lokasi/Proses/Fungsi'."""
+    """Form column 'Lokasi/Proses/Fungsi'. The 'No.' and 'Regulasi yang berlaku' cells are
+    merged per group on the form, so the number is the group's position and the
+    regulations live here (activities read them from their group)."""
     hira_document = models.ForeignKey(HIRADocument, on_delete=models.CASCADE, related_name='groups')
     location_function = models.CharField(max_length=255)
+    applicable_regulation = models.TextField(blank=True)   # one regulation per line
     order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -92,7 +95,6 @@ class HIRAActivity(models.Model):
     activity_type         = models.CharField(max_length=2, choices=ActivityType.choices)  # N/NR
     potential_hazard      = models.TextField()                               # Potensi Bahaya/Aspek Lingkungan
     risk_impact           = models.TextField()                               # Resiko/Dampak Lingkungan
-    applicable_regulation = models.TextField(blank=True)                     # Regulasi yang Berlaku
     existing_controls     = models.TextField(blank=True)                     # Pengendalian Awal
     control_category      = models.CharField(max_length=100, blank=True)     # e.g. "ADM, APD"
     opportunity           = models.TextField(blank=True)                     # Peluang

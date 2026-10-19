@@ -19,6 +19,9 @@ class UserBriefSerializer(serializers.ModelSerializer):
 
 
 class HIRAActivitySerializer(serializers.ModelSerializer):
+    # Regulations belong to the group (one merged cell on the form); read-only here.
+    applicable_regulation = serializers.CharField(source='group.applicable_regulation', read_only=True)
+
     class Meta:
         model = HIRAActivity
         fields = [
@@ -32,6 +35,7 @@ class HIRAActivitySerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
         read_only_fields = [
+            'applicable_regulation',
             'initial_score', 'initial_category', 'initial_acceptable',
             'residual_score', 'residual_category', 'residual_acceptable',
             'created_at', 'updated_at',
@@ -48,7 +52,8 @@ class HIRAGroupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HIRAGroup
-        fields = ['id', 'hira_document', 'location_function', 'order', 'activities']
+        fields = ['id', 'hira_document', 'location_function', 'applicable_regulation',
+                  'order', 'activities']
 
     def validate_hira_document(self, doc):
         if self.instance is not None and doc != self.instance.hira_document:
@@ -103,7 +108,7 @@ class HIRAActivityInputSerializer(serializers.ModelSerializer):
         model = HIRAActivity
         fields = [
             'order', 'activity_name', 'activity_type',
-            'potential_hazard', 'risk_impact', 'applicable_regulation',
+            'potential_hazard', 'risk_impact',
             'existing_controls', 'control_category', 'opportunity',
             'initial_severity', 'initial_likelihood',
             'residual_severity', 'residual_likelihood',
@@ -116,7 +121,7 @@ class HIRAGroupInputSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HIRAGroup
-        fields = ['location_function', 'order', 'activities']
+        fields = ['location_function', 'applicable_regulation', 'order', 'activities']
 
 
 class HIRADocumentCreateSerializer(HIRADocumentListSerializer):

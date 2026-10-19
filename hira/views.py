@@ -174,7 +174,7 @@ class HIRAActivityViewSet(HIRAContentViewSet):
 
     def get_queryset(self):
         qs = HIRAActivity.objects.filter(
-            group__hira_document__in=visible_documents(self.request.user))
+            group__hira_document__in=visible_documents(self.request.user)).select_related('group')
         p = self.request.query_params
         if p.get('group'):
             qs = qs.filter(group_id=p['group'])
