@@ -98,6 +98,13 @@ STORAGES = {
     },
 }
 
+# Evidence photos (permits). Private Supabase Storage bucket, reached with the service key.
+# The service key is a secret: set it on Render only, never in the frontend.
+SUPABASE_URL = config('SUPABASE_URL', default='')
+SUPABASE_SERVICE_KEY = config('SUPABASE_SERVICE_KEY', default='')
+SUPABASE_BUCKET = config('SUPABASE_BUCKET', default='permit-photos')
+EVIDENCE_STORAGE = 'core.storage.SupabaseStorage'
+
 CORS_ALLOW_ALL_ORIGINS = True  # TODO: restrict to frontend domain in production
 
 REST_FRAMEWORK = {

@@ -7,6 +7,7 @@ from hira.models import HIRAActivity, HIRADocument, HIRAGroup
 from projects.models import Project, ProjectMember
 from users.models import User
 from .models import Permit
+from .tests import LOC, MEMORY, add_photo, ensure_before_photo
 
 R = User.Role
 URL = '/api/permits/'
@@ -16,6 +17,7 @@ PLAIN_STATIC = {
 }
 
 
+@MEMORY
 class Base(TestCase):
     def setUp(self):
         mk = lambda n, r, **kw: User.objects.create_user(f'{n}@t.com', 'pass12345', full_name=n, role=r, **kw)
@@ -61,7 +63,11 @@ class Base(TestCase):
         return r.data['id']
 
     def submit(self, pid):
-        return self.call(self.sub, 'post', f'{URL}{pid}/submit/')
+        ensure_before_photo(pid)
+        return self.call(self.sub, 'post', f'{URL}{pid}/submit/', LOC)
+
+    def approve(self, user, pid):
+        return self.call(user, 'post', f'{URL}{pid}/approve/', LOC)
 
 
 class OwnershipAndLockTests(Base):
@@ -76,7 +82,8 @@ class OwnershipAndLockTests(Base):
     def test_submit_rechecks_ownership_even_if_the_row_was_made_another_way(self):
         pid = self.create(act=self.make_hira(owner=self.sub2), user=self.sub2)
         Permit.objects.filter(pk=pid).update(hira_activity=self.make_hira(owner=self.sub))
-        r = self.call(self.sub2, 'post', f'{URL}{pid}/submit/')
+        add_photo(pid)
+        r = self.call(self.sub2, 'post', f'{URL}{pid}/submit/', LOC)
         self.assertEqual(r.status_code, 400)
         self.assertIn('hira_activity', r.data)
 
@@ -123,10 +130,11 @@ class CancelCascadeTests(Base):
         self.submit(pending)
         approved = self.create(act=act)
         self.submit(approved)
-        self.call(self.sup, 'post', f'{URL}{approved}/approve/')
+        self.approve(self.sup, approved)
         closed = self.create(act=act)
         self.submit(closed)
-        self.call(self.sup, 'post', f'{URL}{closed}/approve/')
+        self.approve(self.sup, closed)
+        add_photo(closed, 'after')
         self.call(self.sub, 'post', f'{URL}{closed}/request-close/', {'post_work_evaluation': 'ok'})
         self.call(self.officer, 'post', f'{URL}{closed}/confirm-close/')
         unrelated = self.create()                                   # a different HIRA
@@ -164,13 +172,13 @@ class ProjectGuardTests(Base):
         self.assertEqual(self.call(self.sub, 'patch', f'{URL}{draft}/', {'worker_count': 5}).status_code, 409)
         self.assertEqual(self.submit(draft).status_code, 409)
         self.assertEqual(self.call(self.sub, 'delete', f'{URL}{draft}/').status_code, 409)
-        self.assertEqual(self.call(self.sup, 'post', f'{URL}{pending}/approve/').status_code, 409)
+        self.assertEqual(self.approve(self.sup, pending).status_code, 409)
         self.assertEqual(self.call(self.officer, 'post', f'{URL}{pending}/set-number/',
                                    {'document_number': 'X'}).status_code, 409)
         self.assertEqual(self.call(self.sub, 'get', f'{URL}{draft}/').status_code, 200)   # still readable
 
         Project.objects.filter(pk=self.p1.pk).update(is_active=True)                       # comes back as it was
-        self.assertEqual(self.call(self.sup, 'post', f'{URL}{pending}/approve/').status_code, 200)
+        self.assertEqual(self.approve(self.sup, pending).status_code, 200)
 
         Project.objects.filter(pk=self.p1.pk).update(is_active=False)
         self.assertEqual(self.call(self.coord, 'post', f'{URL}{draft}/cancel/', {'reason': 'x'}).status_code, 200)
@@ -178,7 +186,7 @@ class ProjectGuardTests(Base):
     def test_inactive_project_blocks_closing(self):
         pid = self.create()
         self.submit(pid)
-        self.call(self.sup, 'post', f'{URL}{pid}/approve/')
+        self.approve(self.sup, pid)
         Project.objects.filter(pk=self.p1.pk).update(is_active=False)
         self.assertEqual(self.call(self.sub, 'post', f'{URL}{pid}/request-close/',
                                    {'post_work_evaluation': 'ok'}).status_code, 409)

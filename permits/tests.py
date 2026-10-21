@@ -1,16 +1,37 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from audit.models import AuditLog
 from hira.models import HIRAActivity, HIRADocument, HIRAGroup
 from projects.models import Project, ProjectMember
 from users.models import User
+from .models import Permit, PermitPhoto
 
 R = User.Role
 URL = '/api/permits/'
+LOC = {'latitude': -6.917464, 'longitude': 107.619123, 'accuracy': 12.5,
+       'captured_at': '2026-10-20T08:00:00+07:00'}
+MEMORY = override_settings(EVIDENCE_STORAGE='core.storage.MemoryStorage')
+
+
+def add_photo(pid, stage='before'):
+    """Attach a photo row directly. The upload endpoint itself is covered in test_evidence."""
+    permit = Permit.objects.get(pk=pid)
+    n = PermitPhoto.objects.count()
+    return PermitPhoto.objects.create(
+        permit=permit, stage=stage, storage_path=f'permits/{pid}/{stage}/t{n}.jpg',
+        content_type='image/jpeg', size=10, uploaded_by=permit.created_by)
+
+
+def ensure_before_photo(pid):
+    if not PermitPhoto.objects.filter(permit_id=pid, stage='before').exists():
+        add_photo(pid)
+
+
 LS = {'R': (1, 1), 'M': (2, 3), 'T': (3, 4), 'E': (4, 5)}   # (likelihood, severity) -> Rt 1/6/12/20
 
 
+@MEMORY
 class PermitWorkflowTests(TestCase):
     def setUp(self):
         mk = lambda n, r: User.objects.create_user(f'{n}@t.com', 'pass12345', full_name=n, role=r)
@@ -58,9 +79,12 @@ class PermitWorkflowTests(TestCase):
         return r.data['id']
 
     def submit(self, pid):
-        return self.call(self.sub, 'post', f'{URL}{pid}/submit/')
+        ensure_before_photo(pid)
+        return self.call(self.sub, 'post', f'{URL}{pid}/submit/', LOC)
 
     def act(self, user, pid, name, data=None):
+        if name == 'approve' and user.role in (R.SUPERVISOR, R.HSE_OFFICER):
+            data = {**LOC, **(data or {})}      # on-site approvers send their location
         return self.call(user, 'post', f'{URL}{pid}/{name}/', data)
 
     # tests
@@ -154,6 +178,7 @@ class PermitWorkflowTests(TestCase):
         self.assertEqual(self.act(self.sub, pid, 'request-close', {'post_work_evaluation': 'x'}).status_code, 409)
         self.act(self.sup, pid, 'approve')
         self.assertEqual(self.act(self.sub, pid, 'request-close').status_code, 400)  # evaluation required
+        add_photo(pid, 'after')
         r = self.act(self.sub, pid, 'request-close', {'post_work_evaluation': 'Selesai aman'})
         self.assertEqual(r.data['status'], 'pending_close')
         self.assertEqual(self.act(self.sub, pid, 'confirm-close').status_code, 403)

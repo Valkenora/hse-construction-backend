@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db.models import Q
 
 from hira.models import HIRAActivity
@@ -117,3 +118,65 @@ class PermitApproval(models.Model):
 
     def get_audit_project(self):
         return self.permit.project
+
+
+class PermitPhoto(models.Model):
+    """Photo evidence. 'before' is attached by the Subkontraktor before submitting, 'after'
+    before requesting closure. The file lives in private storage; only its path is kept."""
+
+    class Stage(models.TextChoices):
+        BEFORE = 'before', 'Sebelum pekerjaan'
+        AFTER  = 'after',  'Setelah pekerjaan'
+
+    permit        = models.ForeignKey(Permit, on_delete=models.CASCADE, related_name='photos')
+    stage         = models.CharField(max_length=10, choices=Stage.choices)
+    storage_path  = models.CharField(max_length=255, unique=True)
+    original_name = models.CharField(max_length=255, blank=True)
+    content_type  = models.CharField(max_length=50)
+    size          = models.PositiveIntegerField()
+    uploaded_by   = models.ForeignKey(User, on_delete=models.PROTECT, related_name='permit_photos')
+    uploaded_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+        indexes = [models.Index(fields=['permit', 'stage'])]
+
+    def __str__(self):
+        return f'{self.permit_id} {self.stage} {self.storage_path}'
+
+    def get_audit_project(self):
+        return self.permit.project
+
+
+class PermitGeoStamp(models.Model):
+    """Where the device said it was when someone acted. Self-reported by the browser and
+    checked by a human in the approval chain, so it is stored as given, not verified."""
+
+    class Step(models.TextChoices):
+        CREATOR    = 'creator',     'Subkontraktor (pengajuan)'
+        SUPERVISOR = 'supervisor',  'Supervisor Lapangan'
+        OFFICER    = 'hse_officer', 'HSE Officer'
+
+    permit           = models.ForeignKey(Permit, on_delete=models.PROTECT, related_name='geo_stamps')
+    step             = models.CharField(max_length=20, choices=Step.choices)
+    submission_round = models.PositiveSmallIntegerField()
+    latitude         = models.FloatField(validators=[MinValueValidator(-90), MaxValueValidator(90)])
+    longitude        = models.FloatField(validators=[MinValueValidator(-180), MaxValueValidator(180)])
+    accuracy         = models.FloatField(validators=[MinValueValidator(0)])   # metres
+    captured_at      = models.DateTimeField()                                 # device clock
+    recorded_by      = models.ForeignKey(User, on_delete=models.PROTECT, related_name='permit_geo_stamps')
+    recorded_at      = models.DateTimeField(auto_now_add=True)               # server clock
+
+    class Meta:
+        ordering = ['recorded_at', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['permit', 'step', 'submission_round'],
+                                    name='uniq_permit_geo_per_step_round'),
+            models.CheckConstraint(condition=Q(latitude__gte=-90, latitude__lte=90,
+                                               longitude__gte=-180, longitude__lte=180,
+                                               accuracy__gte=0),
+                                   name='permit_geo_in_range'),
+        ]
+
+    def __str__(self):
+        return f'{self.permit_id} {self.step} {self.latitude:.5f},{self.longitude:.5f}'

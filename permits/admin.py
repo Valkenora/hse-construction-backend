@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from . import services
-from .models import Permit, PermitApproval
+from .models import Permit, PermitApproval, PermitGeoStamp, PermitPhoto
 from .selectors import visible_permits
 
 # The admin is an inspection window. Permit content, status and approvals change only
@@ -34,6 +34,19 @@ class PermitApprovalInline(ReadOnlyMixin, admin.TabularInline):
     readonly_fields = ['decided_at']
 
 
+class PermitPhotoInline(ReadOnlyMixin, admin.TabularInline):
+    model = PermitPhoto
+    extra = 0
+    fields = readonly_fields = ['stage', 'storage_path', 'original_name', 'size', 'uploaded_by', 'uploaded_at']
+
+
+class PermitGeoStampInline(ReadOnlyMixin, admin.TabularInline):
+    model = PermitGeoStamp
+    extra = 0
+    fields = readonly_fields = ['step', 'submission_round', 'latitude', 'longitude', 'accuracy',
+                                'captured_at', 'recorded_by', 'recorded_at']
+
+
 @admin.register(Permit)
 class PermitAdmin(admin.ModelAdmin):
     list_display = ['permit_type', 'work_location', 'project', 'status', 'risk_category',
@@ -41,7 +54,7 @@ class PermitAdmin(admin.ModelAdmin):
     list_filter = ['status', 'permit_type', 'risk_category', 'project']
     search_fields = ['document_number', 'work_location', 'work_description']
     list_select_related = ['project', 'created_by']
-    inlines = [PermitApprovalInline]
+    inlines = [PermitApprovalInline, PermitPhotoInline, PermitGeoStampInline]
     editable_fields = ('document_number',)
 
     def get_queryset(self, request):

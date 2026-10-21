@@ -1,12 +1,12 @@
 from rest_framework import serializers
 
 from hira.models import HIRADocument
-from hira.serializers import UserBriefSerializer
+from hira.serializers import RemarksSerializer, UserBriefSerializer
 from projects.models import ProjectMember
 from users.models import User
 from . import routing, services
 from .forms import ENABLED_TYPES, FORMS
-from .models import Permit, PermitApproval
+from .models import Permit, PermitApproval, PermitGeoStamp, PermitPhoto
 
 S = Permit.Status
 
@@ -17,6 +17,66 @@ class PermitApprovalSerializer(serializers.ModelSerializer):
     class Meta:
         model = PermitApproval
         fields = ['id', 'step', 'decision', 'decided_by', 'remarks', 'submission_round', 'decided_at']
+
+
+LOCATION_FIELDS = ('latitude', 'longitude', 'accuracy', 'captured_at')
+
+
+class LocationFields(serializers.Serializer):
+    """The device position as the browser reports it (navigator.geolocation). Stored as sent;
+    a person in the approval chain checks it against the site."""
+    latitude = serializers.FloatField(min_value=-90, max_value=90)
+    longitude = serializers.FloatField(min_value=-180, max_value=180)
+    accuracy = serializers.FloatField(min_value=0)          # metres
+    captured_at = serializers.DateTimeField()               # when the device took the fix
+
+
+class SubmitSerializer(LocationFields):
+    """POST .../submit/. The Subkontraktor's location is mandatory."""
+
+    def validate(self, attrs):
+        return {'location': {k: attrs[k] for k in LOCATION_FIELDS}}
+
+
+class DecisionSerializer(RemarksSerializer):
+    """POST .../approve/ and .../reject/. Location is optional here: the service requires it
+    when a Supervisor or HSE Officer approves, and ignores it for everyone else."""
+    latitude = serializers.FloatField(required=False, min_value=-90, max_value=90)
+    longitude = serializers.FloatField(required=False, min_value=-180, max_value=180)
+    accuracy = serializers.FloatField(required=False, min_value=0)
+    captured_at = serializers.DateTimeField(required=False)
+
+    def validate(self, attrs):
+        given = [k for k in LOCATION_FIELDS if k in attrs]
+        if given and len(given) < len(LOCATION_FIELDS):
+            raise serializers.ValidationError({k: 'Required when any location field is sent.'
+                                               for k in LOCATION_FIELDS if k not in attrs})
+        location = {k: attrs.pop(k) for k in given}
+        return {**attrs, 'location': location or None}
+
+
+class PermitPhotoSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()   # short-lived signed link; null if storage is down
+    uploaded_by = UserBriefSerializer(read_only=True)
+
+    class Meta:
+        model = PermitPhoto
+        fields = ['id', 'stage', 'original_name', 'content_type', 'size', 'uploaded_by',
+                  'uploaded_at', 'url']
+        read_only_fields = fields
+
+    def get_url(self, obj):
+        return self.context.get('urls', {}).get(obj.storage_path)
+
+
+class PermitGeoStampSerializer(serializers.ModelSerializer):
+    recorded_by = UserBriefSerializer(read_only=True)
+
+    class Meta:
+        model = PermitGeoStamp
+        fields = ['id', 'step', 'submission_round', 'latitude', 'longitude', 'accuracy',
+                  'captured_at', 'recorded_by', 'recorded_at']
+        read_only_fields = fields
 
 
 class PermitListSerializer(serializers.ModelSerializer):
@@ -39,6 +99,8 @@ class PermitDetailSerializer(PermitListSerializer):
     cancelled_by = UserBriefSerializer(read_only=True)
     closed_by = UserBriefSerializer(read_only=True)
     approvals = PermitApprovalSerializer(many=True, read_only=True)
+    photos = serializers.SerializerMethodField()
+    geo_stamps = PermitGeoStampSerializer(many=True, read_only=True)
     approval_chain = serializers.SerializerMethodField()
     form = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
@@ -48,7 +110,7 @@ class PermitDetailSerializer(PermitListSerializer):
             'hira_activity', 'hira_document', 'hira_activity_name', 'hira_initial_category',
             'work_start', 'work_end', 'equipment_used', 'person_in_charge', 'worker_count',
             'safety_areas', 'checklist', 'ppe', 'ppe_other',
-            'approvals', 'approval_chain',
+            'approvals', 'approval_chain', 'photos', 'geo_stamps',
             'cancelled_by', 'cancelled_at', 'cancel_reason',
             'post_work_evaluation', 'close_requested_at', 'closed_by', 'closed_at',
             'form', 'allowed_actions',
@@ -122,6 +184,11 @@ class PermitDetailSerializer(PermitListSerializer):
         f = FORMS[obj.permit_type]
         return {'code': f['code'], 'revision': f['revision']}
 
+    def get_photos(self, obj):
+        photos = list(obj.photos.all())
+        urls = services.signed_urls([p.storage_path for p in photos]) if photos else {}
+        return PermitPhotoSerializer(photos, many=True, context={'urls': urls}).data
+
     def get_approval_chain(self, obj):
         if not obj.risk_category:
             return []
@@ -148,6 +215,11 @@ class PermitDetailSerializer(PermitListSerializer):
             'can_cancel': u.role == User.Role.HSE_COORDINATOR and obj.status not in services.FINAL_STATUSES,
             'can_request_close': u.id == obj.created_by_id and obj.status == S.APPROVED,
             'can_confirm_close': u.role == User.Role.HSE_OFFICER and obj.status == S.PENDING_CLOSE,
+            'can_upload_before_photos': own_editable,
+            'can_upload_after_photos': u.id == obj.created_by_id and obj.status == S.APPROVED,
+            # the frontend must send latitude/longitude/accuracy/captured_at with these actions
+            'decide_requires_location': (services.can_decide(obj, u)
+                                         and u.role in services.GEO_STEPS),
             'can_set_number': u.role in (User.Role.HSE_OFFICER, User.Role.HSE_COORDINATOR)
                               and obj.status != S.CANCELLED,
         }

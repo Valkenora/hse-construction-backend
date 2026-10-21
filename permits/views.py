@@ -2,19 +2,21 @@ from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from audit.services import Action, log_event
 from core.mixins import LockedPartialUpdateMixin
-from hira.serializers import CancelSerializer, RemarksSerializer, SetNumberSerializer
+from hira.serializers import CancelSerializer, SetNumberSerializer
 from users.models import User
 from users.permissions import HasRole
 from . import services
 from .forms import ENABLED_TYPES, FORMS, WAH
-from .models import Permit, PermitApproval
+from .models import Permit, PermitApproval, PermitPhoto
 from .selectors import visible_permits
-from .serializers import CloseRequestSerializer, PermitDetailSerializer, PermitListSerializer
+from .serializers import (CloseRequestSerializer, DecisionSerializer, PermitDetailSerializer,
+                          PermitListSerializer, SubmitSerializer)
 
 R = User.Role
 WRITE_METHODS = ['get', 'post', 'patch', 'delete', 'head', 'options']  # no PUT
@@ -27,7 +29,8 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
         roles = {
             'create': (R.SUBCONTRACTOR,), 'partial_update': (R.SUBCONTRACTOR,),
             'destroy': (R.SUBCONTRACTOR,), 'submit': (R.SUBCONTRACTOR,),
-            'request_close': (R.SUBCONTRACTOR,),
+            'request_close': (R.SUBCONTRACTOR,), 'photos': (R.SUBCONTRACTOR,),
+            'delete_photo': (R.SUBCONTRACTOR,),
             'approve': (R.SUPERVISOR, R.HSE_OFFICER, R.PROJECT_MANAGER),
             'reject': (R.SUPERVISOR, R.HSE_OFFICER, R.PROJECT_MANAGER),
             'confirm_close': (R.HSE_OFFICER,),
@@ -43,7 +46,8 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
         qs = visible_permits(self.request.user).select_related(
             'project', 'created_by', 'cancelled_by', 'closed_by', 'hira_activity__group__hira_document')
         if self.action != 'list':
-            qs = qs.prefetch_related('approvals__decided_by')
+            qs = qs.prefetch_related('approvals__decided_by', 'photos__uploaded_by',
+                                     'geo_stamps__recorded_by')
         p = self.request.query_params
         for key in ('project', 'status', 'risk_category', 'permit_type'):
             if p.get(key):
@@ -73,25 +77,30 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
         permit = services.lock_for_edit(instance.pk, self.request.user)
         if permit.submission_round > 0:
             raise services.InvalidTransition('A permit that has been submitted cannot be deleted.')
+        paths = list(instance.photos.values_list('storage_path', flat=True))
         log_event(instance, Action.DELETED, request=self.request)
         instance.delete()
+        if paths:      # the rows are gone; remove the files too, once the delete has committed
+            transaction.on_commit(lambda: services.discard_objects(paths))
 
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
-        services.submit(self.get_object(), request.user, request)
+        body = SubmitSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        services.submit(self.get_object(), request.user, request, body.validated_data['location'])
         return self._detail()
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        body = RemarksSerializer(data=request.data)
+        body = DecisionSerializer(data=request.data)
         body.is_valid(raise_exception=True)
-        services.decide(self.get_object(), request.user, request,
-                        PermitApproval.Decision.APPROVED, body.validated_data.get('remarks', ''))
+        services.decide(self.get_object(), request.user, request, PermitApproval.Decision.APPROVED,
+                        body.validated_data.get('remarks', ''), body.validated_data['location'])
         return self._detail()
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        body = RemarksSerializer(data=request.data)
+        body = DecisionSerializer(data=request.data)
         body.is_valid(raise_exception=True)
         services.decide(self.get_object(), request.user, request,
                         PermitApproval.Decision.REJECTED, body.validated_data.get('remarks', ''))
@@ -123,4 +132,19 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
         body.is_valid(raise_exception=True)
         services.set_number(self.get_object(), request.user, request,
                             body.validated_data['document_number'])
+        return self._detail()
+
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser])
+    def photos(self, request, pk=None):
+        """multipart/form-data: `stage` ("before" | "after") and one or more `photos` files."""
+        stage = request.data.get('stage')
+        if stage not in PermitPhoto.Stage.values:
+            raise ValidationError({'stage': 'Must be "before" or "after".'})
+        services.add_photos(self.get_object(), request.user, request, stage,
+                            request.FILES.getlist('photos'))
+        return Response(self.get_serializer(self.get_object()).data, status=201)
+
+    @action(detail=True, methods=['delete'], url_path=r'photos/(?P<photo_id>\d+)')
+    def delete_photo(self, request, pk=None, photo_id=None):
+        services.delete_photo(self.get_object(), request.user, request, int(photo_id))
         return self._detail()
