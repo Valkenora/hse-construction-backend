@@ -28,17 +28,20 @@ class SupabaseStorage:
     TIMEOUT = 20   # seconds
 
     def __init__(self):
-        self.base = (settings.SUPABASE_URL or '').rstrip('/')
-        self.key = settings.SUPABASE_SERVICE_KEY
+        self.base = (settings.SUPABASE_URL or '').strip().rstrip('/')
+        self.key = (settings.SUPABASE_SERVICE_KEY or '').strip()
         self.bucket = settings.SUPABASE_BUCKET
         if not (self.base and self.key and self.bucket):
             raise StorageError('Photo storage is not configured on the server.')
 
     def _call(self, method, path, body=None, content_type='application/json'):
+        headers = {'apikey': self.key, 'Content-Type': content_type}
+        if self.key.startswith('eyJ'):
+            # Legacy service_role keys are JWTs and go in Authorization too. The newer
+            # sb_secret_... keys are not JWTs: Supabase says to send them in `apikey` only.
+            headers['Authorization'] = f'Bearer {self.key}'
         request = urllib.request.Request(
-            f'{self.base}/storage/v1{path}', data=body, method=method,
-            headers={'Authorization': f'Bearer {self.key}', 'apikey': self.key,
-                     'Content-Type': content_type})
+            f'{self.base}/storage/v1{path}', data=body, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.TIMEOUT) as response:
                 raw = response.read()

@@ -252,8 +252,17 @@ class SupabaseStorageTests(TestCase):
         req = op.call_args.args[0]
         self.assertEqual(req.full_url, 'https://proj.supabase.co/storage/v1/object/permit-photos/permits/1/before/a.jpg')
         self.assertEqual((req.method, req.data), ('POST', b'bytes'))
-        self.assertEqual(req.get_header('Authorization'), 'Bearer secret')
+        self.assertEqual(req.get_header('Apikey'), 'secret')
+        self.assertIsNone(req.get_header('Authorization'))      # sb_secret_ style keys: apikey only
         self.assertEqual(req.get_header('Content-type'), 'image/jpeg')
+
+    def test_a_legacy_jwt_key_is_also_sent_as_bearer(self):
+        s = self.make(SUPABASE_SERVICE_KEY='eyJhbGciOi.payload.sig')
+        with mock.patch('urllib.request.urlopen', return_value=self.fake_response(b'{}')) as op:
+            s.delete(['a.jpg'])
+        req = op.call_args.args[0]
+        self.assertEqual(req.get_header('Authorization'), 'Bearer eyJhbGciOi.payload.sig')
+        self.assertEqual(req.get_header('Apikey'), 'eyJhbGciOi.payload.sig')
 
     def test_signed_urls_are_built_from_the_response(self):
         s = self.make()
