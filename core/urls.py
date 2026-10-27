@@ -8,4 +8,5 @@ urlpatterns = [
     path('api/projects/', include('projects.urls')),
     path('api/hira/', include('hira.urls')),
     path('api/permits/', include('permits.urls')),
+    path('api/mk/', include('permits.mk_urls')),     # public: MK approval link + OTP
 ]

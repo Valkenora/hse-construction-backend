@@ -4,19 +4,53 @@ from hira.models import HIRADocument
 from hira.serializers import RemarksSerializer, UserBriefSerializer
 from projects.models import ProjectMember
 from users.models import User
-from . import routing, services
+from . import mk, routing, services
 from .forms import ENABLED_TYPES, FORMS
-from .models import Permit, PermitApproval, PermitGeoStamp, PermitPhoto
+from .models import MKApprovalRequest, Permit, PermitApproval, PermitGeoStamp, PermitPhoto
 
 S = Permit.Status
 
 
 class PermitApprovalSerializer(serializers.ModelSerializer):
-    decided_by = UserBriefSerializer(read_only=True)
+    decided_by = UserBriefSerializer(read_only=True)             # null for MK
+    decided_by_external = serializers.SerializerMethodField()    # {name, email} for MK, else null
 
     class Meta:
         model = PermitApproval
-        fields = ['id', 'step', 'decision', 'decided_by', 'remarks', 'submission_round', 'decided_at']
+        fields = ['id', 'step', 'decision', 'decided_by', 'decided_by_external', 'remarks',
+                  'submission_round', 'decided_at']
+
+    def get_decided_by_external(self, obj):
+        if obj.decided_by_id is not None:
+            return None
+        return {'name': obj.external_name, 'email': obj.external_email}
+
+
+class MKRequestSerializer(serializers.ModelSerializer):
+    """Delivery status of an MK link, for staff. Never exposes the token or the code."""
+    contact_name = serializers.CharField(source='contact.full_name', read_only=True)
+    contact_email = serializers.SerializerMethodField()
+    state = serializers.SerializerMethodField()      # active | expired | decided | superseded
+    email_sent = serializers.SerializerMethodField()
+    email_error = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MKApprovalRequest
+        fields = ['id', 'contact_name', 'contact_email', 'submission_round', 'state', 'expires_at',
+                  'email_sent', 'email_sent_at', 'email_error', 'otp_sent_count', 'created_at']
+        read_only_fields = fields
+
+    def get_contact_email(self, obj):
+        return mk.mask_email(obj.contact.email)
+
+    def get_state(self, obj):
+        return mk.effective_status(obj)
+
+    def get_email_sent(self, obj):
+        return obj.email_sent_at is not None
+
+    def get_email_error(self, obj):
+        return obj.email_error or None
 
 
 LOCATION_FIELDS = ('latitude', 'longitude', 'accuracy', 'captured_at')
@@ -102,6 +136,7 @@ class PermitDetailSerializer(PermitListSerializer):
     photos = serializers.SerializerMethodField()
     geo_stamps = PermitGeoStampSerializer(many=True, read_only=True)
     approval_chain = serializers.SerializerMethodField()
+    mk_requests = serializers.SerializerMethodField()
     form = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
 
@@ -110,7 +145,7 @@ class PermitDetailSerializer(PermitListSerializer):
             'hira_activity', 'hira_document', 'hira_activity_name', 'hira_initial_category',
             'work_start', 'work_end', 'equipment_used', 'person_in_charge', 'worker_count',
             'safety_areas', 'checklist', 'ppe', 'ppe_other',
-            'approvals', 'approval_chain', 'photos', 'geo_stamps',
+            'approvals', 'approval_chain', 'mk_requests', 'photos', 'geo_stamps',
             'cancelled_by', 'cancelled_at', 'cancel_reason',
             'post_work_evaluation', 'close_requested_at', 'closed_by', 'closed_at',
             'form', 'allowed_actions',
@@ -189,6 +224,11 @@ class PermitDetailSerializer(PermitListSerializer):
         urls = services.signed_urls([p.storage_path for p in photos]) if photos else {}
         return PermitPhotoSerializer(photos, many=True, context={'urls': urls}).data
 
+    def get_mk_requests(self, obj):
+        """Links for the current round only, newest first."""
+        rows = [r for r in obj.mk_requests.all() if r.submission_round == obj.submission_round]
+        return MKRequestSerializer(rows, many=True).data
+
     def get_approval_chain(self, obj):
         if not obj.risk_category:
             return []
@@ -220,6 +260,8 @@ class PermitDetailSerializer(PermitListSerializer):
             # the frontend must send latitude/longitude/accuracy/captured_at with these actions
             'decide_requires_location': (services.can_decide(obj, u)
                                          and u.role in services.GEO_STEPS),
+            'can_resend_mk_link': (u.role in (User.Role.HSE_OFFICER, User.Role.HSE_COORDINATOR)
+                                   and obj.status == S.PENDING_MK),
             'can_set_number': u.role in (User.Role.HSE_OFFICER, User.Role.HSE_COORDINATOR)
                               and obj.status != S.CANCELLED,
         }

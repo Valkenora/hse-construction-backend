@@ -4,7 +4,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db.models import Q
 
 from hira.models import HIRAActivity
-from projects.models import Project
+from projects.models import Project, ProjectMKContact
 
 User = settings.AUTH_USER_MODEL
 
@@ -89,7 +89,7 @@ class PermitApproval(models.Model):
         SUPERVISOR = 'supervisor',      'Supervisor Lapangan'
         OFFICER    = 'hse_officer',     'HSE Officer'
         PM         = 'project_manager', 'Project Manager'
-        MK         = 'mk',              'Manajemen Konstruksi'   # used when the OTP flow lands
+        MK         = 'mk',              'Manajemen Konstruksi'   # decided via emailed link + OTP
 
     class Decision(models.TextChoices):
         APPROVED = 'approved', 'Disetujui'
@@ -100,6 +100,11 @@ class PermitApproval(models.Model):
     decision         = models.CharField(max_length=10, choices=Decision.choices)
     decided_by       = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True,
                                          related_name='permit_decisions')   # null for MK (no account)
+    # MK decides through an emailed link + OTP, so there is no user. These record who it was.
+    mk_contact       = models.ForeignKey(ProjectMKContact, on_delete=models.PROTECT, null=True, blank=True,
+                                         related_name='decisions')
+    external_name    = models.CharField(max_length=150, blank=True)    # typed by the MK at decision time
+    external_email   = models.EmailField(blank=True)
     remarks          = models.TextField(blank=True)
     submission_round = models.PositiveSmallIntegerField()
     decided_at       = models.DateTimeField(auto_now_add=True)
@@ -111,6 +116,8 @@ class PermitApproval(models.Model):
                                    name='permit_rejection_requires_remarks'),
             models.UniqueConstraint(fields=['permit', 'step', 'submission_round'],
                                     name='uniq_permit_decision_per_step_round'),
+            models.CheckConstraint(condition=Q(decided_by__isnull=False) | Q(step='mk'),
+                                   name='permit_decider_required_unless_mk'),
         ]
 
     def __str__(self):
@@ -180,3 +187,42 @@ class PermitGeoStamp(models.Model):
 
     def __str__(self):
         return f'{self.permit_id} {self.step} {self.latitude:.5f},{self.longitude:.5f}'
+
+
+
+class MKApprovalRequest(models.Model):
+    """One emailed link for one MK contact for one submission round. The link token and the
+    OTP are never stored, only their hashes. Any one contact deciding closes the others."""
+
+    class Status(models.TextChoices):
+        ACTIVE     = 'active',     'Aktif'
+        DECIDED    = 'decided',    'Sudah diputuskan'
+        SUPERSEDED = 'superseded', 'Digantikan'    # a newer link was issued, or another contact decided
+
+    permit           = models.ForeignKey(Permit, on_delete=models.PROTECT, related_name='mk_requests')
+    contact          = models.ForeignKey(ProjectMKContact, on_delete=models.PROTECT, related_name='requests')
+    submission_round = models.PositiveSmallIntegerField()
+    status           = models.CharField(max_length=12, choices=Status.choices, default=Status.ACTIVE)
+    token_hash       = models.CharField(max_length=64, unique=True, editable=False)
+    expires_at       = models.DateTimeField()
+
+    email_sent_at = models.DateTimeField(null=True, blank=True)
+    email_error   = models.CharField(max_length=255, blank=True)   # why the last send failed
+
+    otp_hash       = models.CharField(max_length=64, blank=True, editable=False)
+    otp_expires_at = models.DateTimeField(null=True, blank=True)
+    otp_sent_at    = models.DateTimeField(null=True, blank=True)
+    otp_sent_count = models.PositiveSmallIntegerField(default=0)
+    otp_attempts   = models.PositiveSmallIntegerField(default=0)   # wrong tries on the current code
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['permit', 'status'])]
+
+    def __str__(self):
+        return f'MK link #{self.pk} permit {self.permit_id} {self.contact.email} ({self.status})'
+
+    def get_audit_project(self):
+        return self.permit.project

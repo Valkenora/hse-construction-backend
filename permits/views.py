@@ -11,7 +11,7 @@ from core.mixins import LockedPartialUpdateMixin
 from hira.serializers import CancelSerializer, SetNumberSerializer
 from users.models import User
 from users.permissions import HasRole
-from . import services
+from . import mk, services
 from .forms import ENABLED_TYPES, FORMS, WAH
 from .models import Permit, PermitApproval, PermitPhoto
 from .selectors import visible_permits
@@ -36,6 +36,7 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
             'confirm_close': (R.HSE_OFFICER,),
             'cancel': (R.HSE_COORDINATOR,),
             'set_number': (R.HSE_OFFICER, R.HSE_COORDINATOR),
+            'mk_resend': (R.HSE_OFFICER, R.HSE_COORDINATOR),
         }.get(self.action)
         return [HasRole(*roles)] if roles else [IsAuthenticated()]
 
@@ -47,7 +48,7 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
             'project', 'created_by', 'cancelled_by', 'closed_by', 'hira_activity__group__hira_document')
         if self.action != 'list':
             qs = qs.prefetch_related('approvals__decided_by', 'photos__uploaded_by',
-                                     'geo_stamps__recorded_by')
+                                     'geo_stamps__recorded_by', 'mk_requests__contact')
         p = self.request.query_params
         for key in ('project', 'status', 'risk_category', 'permit_type'):
             if p.get(key):
@@ -147,4 +148,10 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['delete'], url_path=r'photos/(?P<photo_id>\d+)')
     def delete_photo(self, request, pk=None, photo_id=None):
         services.delete_photo(self.get_object(), request.user, request, int(photo_id))
+        return self._detail()
+
+    @action(detail=True, methods=['post'], url_path='mk-resend')
+    def mk_resend(self, request, pk=None):
+        """Issue fresh MK links (old ones stop working) while the permit waits for MK."""
+        mk.resend_links(self.get_object(), request)
         return self._detail()

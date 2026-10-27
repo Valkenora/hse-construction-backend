@@ -13,7 +13,7 @@ from hira.services import InvalidTransition
 from projects.guards import ensure_active, ensure_creator_can_work
 from projects.models import ProjectMember
 from users.models import User
-from . import evidence, routing
+from . import evidence, mk, routing
 from .forms import FORMS
 from .models import Permit, PermitApproval, PermitGeoStamp, PermitPhoto
 
@@ -119,6 +119,9 @@ def submit(permit, user, request, location):
     errors = incomplete_fields(permit)
     if not permit.photos.filter(stage=Stage.BEFORE).exists():
         errors['photos'] = 'Upload at least one "before" photo before submitting.'
+    if activity.initial_category in routing.MK_CATEGORIES and not mk.active_contacts(permit.project_id).exists():
+        errors['mk'] = ('This permit needs MK approval, but the project has no active MK contact. '
+                        'Ask HSE to add one to the project.')
     if errors:
         raise ValidationError(errors)
 
@@ -154,6 +157,8 @@ def decide(permit, user, request, decision, remarks='', location=None):
         if permit.hira_activity.group.hira_document.status != HIRADocument.Status.APPROVED:
             raise InvalidTransition('The referenced HIRA is no longer approved. Reject this permit instead.')
         new_status, action = routing.status_after(permit.risk_category, role), Action.APPROVED
+        if new_status == S.PENDING_MK:
+            mk.require_contacts(permit.project_id)      # fail now, not after the decision is saved
     else:
         if not remarks:
             raise ValidationError({'remarks': 'A reason is required when rejecting.'})
@@ -167,6 +172,8 @@ def decide(permit, user, request, decision, remarks='', location=None):
     permit.status = new_status
     permit.save(update_fields=['status', 'updated_at'])
     log_event(permit, action, request=request, remarks=f'[{role}] {remarks} {where}'.strip())
+    if new_status == S.PENDING_MK:
+        mk.issue_links(permit, request)     # emails go out after this transaction commits
     return permit
 
 

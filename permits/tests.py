@@ -3,7 +3,7 @@ from rest_framework.test import APIClient
 
 from audit.models import AuditLog
 from hira.models import HIRAActivity, HIRADocument, HIRAGroup
-from projects.models import Project, ProjectMember
+from projects.models import Project, ProjectMember, ProjectMKContact
 from users.models import User
 from .models import Permit, PermitPhoto
 
@@ -43,6 +43,7 @@ class PermitWorkflowTests(TestCase):
         for u in (self.sub, self.sub2, self.sup, self.pm):
             ProjectMember.objects.create(project=self.p1, user=u)
         ProjectMember.objects.create(project=self.p2, user=self.pm2)
+        self.mk = ProjectMKContact.objects.create(project=self.p1, full_name='Pak MK', email='mk@kons.test')
 
     # helpers
     def call(self, user, method, url, data=None):

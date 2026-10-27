@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from . import services
-from .models import Permit, PermitApproval, PermitGeoStamp, PermitPhoto
+from .models import MKApprovalRequest, Permit, PermitApproval, PermitGeoStamp, PermitPhoto
 from .selectors import visible_permits
 
 # The admin is an inspection window. Permit content, status and approvals change only
@@ -47,6 +47,14 @@ class PermitGeoStampInline(ReadOnlyMixin, admin.TabularInline):
                                 'captured_at', 'recorded_by', 'recorded_at']
 
 
+class MKApprovalRequestInline(ReadOnlyMixin, admin.TabularInline):
+    model = MKApprovalRequest
+    extra = 0
+    # Never show the token or code hashes.
+    fields = readonly_fields = ['contact', 'submission_round', 'status', 'expires_at', 'email_sent_at',
+                                'email_error', 'otp_sent_count', 'created_at']
+
+
 @admin.register(Permit)
 class PermitAdmin(admin.ModelAdmin):
     list_display = ['permit_type', 'work_location', 'project', 'status', 'risk_category',
@@ -54,7 +62,7 @@ class PermitAdmin(admin.ModelAdmin):
     list_filter = ['status', 'permit_type', 'risk_category', 'project']
     search_fields = ['document_number', 'work_location', 'work_description']
     list_select_related = ['project', 'created_by']
-    inlines = [PermitApprovalInline, PermitPhotoInline, PermitGeoStampInline]
+    inlines = [PermitApprovalInline, PermitPhotoInline, PermitGeoStampInline, MKApprovalRequestInline]
     editable_fields = ('document_number',)
 
     def get_queryset(self, request):
@@ -81,7 +89,7 @@ class PermitAdmin(admin.ModelAdmin):
 
 @admin.register(PermitApproval)
 class PermitApprovalAdmin(ReadOnlyMixin, admin.ModelAdmin):
-    list_display = ['permit', 'step', 'decision', 'decided_by', 'submission_round', 'decided_at']
+    list_display = ['permit', 'step', 'decision', 'decided_by', 'external_name', 'submission_round', 'decided_at']
     list_filter = ['step', 'decision']
     search_fields = ['permit__document_number', 'permit__work_location', 'remarks']
     list_select_related = ['permit', 'decided_by']

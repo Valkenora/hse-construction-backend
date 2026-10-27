@@ -105,6 +105,20 @@ SUPABASE_SERVICE_KEY = config('SUPABASE_SERVICE_KEY', default='')
 SUPABASE_BUCKET = config('SUPABASE_BUCKET', default='permit-photos')
 EVIDENCE_STORAGE = 'core.storage.SupabaseStorage'
 
+# Email (MK approval links and OTP codes). Resend over HTTPS when a key is set, else the console.
+RESEND_API_KEY = config('RESEND_API_KEY', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='K3 Permit <noreply@localhost>')
+EMAIL_BACKEND = ('core.mail.ResendBackend' if RESEND_API_KEY
+                 else 'django.core.mail.backends.console.EmailBackend')
+FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='').strip().rstrip('/')   # builds the emailed link
+
+# MK approval limits
+MK_LINK_TTL = timedelta(days=7)
+MK_OTP_TTL = timedelta(minutes=10)
+MK_OTP_COOLDOWN_SECONDS = 60      # between two "send code" requests
+MK_OTP_MAX_SENDS = 5              # codes per link; then HSE has to issue a new link
+MK_OTP_MAX_ATTEMPTS = 5           # wrong tries per code
+
 CORS_ALLOW_ALL_ORIGINS = True  # TODO: restrict to frontend domain in production
 
 REST_FRAMEWORK = {
@@ -114,6 +128,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # Coarse per-IP limits on the public MK pages. The real protection is per link (see MK_*).
+    'DEFAULT_THROTTLE_RATES': {'mk_read': '60/min', 'mk_write': '20/min'},
 }
 
 SIMPLE_JWT = {
