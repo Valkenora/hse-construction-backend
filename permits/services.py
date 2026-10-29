@@ -15,7 +15,7 @@ from projects.models import ProjectMember
 from users.models import User
 from . import evidence, mk, routing
 from .forms import FORMS
-from .models import Permit, PermitApproval, PermitGeoStamp, PermitPhoto
+from .models import Permit, PermitApproval, PermitAttachment, PermitGeoStamp, PermitPhoto
 
 S = Permit.Status
 R = User.Role
@@ -26,6 +26,8 @@ PROJECT_SCOPED = (R.SUPERVISOR, R.PROJECT_MANAGER)
 # Roles that stand on site must send their location when approving. PM and MK need not.
 GEO_STEPS = {R.SUPERVISOR: PermitGeoStamp.Step.SUPERVISOR, R.HSE_OFFICER: PermitGeoStamp.Step.OFFICER}
 Stage = PermitPhoto.Stage
+Kind = PermitAttachment.Kind
+MAX_HIRA_ACTIVITIES = 10
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,8 @@ class PAction:
     CLOSED = 'closed'
     PHOTO_ADDED = 'photo_added'
     PHOTO_REMOVED = 'photo_removed'
+    ATTACHMENT_ADDED = 'attachment_added'
+    ATTACHMENT_REMOVED = 'attachment_removed'
 
 
 def _lock(pk):
@@ -88,6 +92,28 @@ def lock_for_edit(pk, user):
     return permit
 
 
+def validate_hira_selection(project_id, owner_id, document, activities):
+    """The rules for what a permit may link to. Returns {field: message}, empty if fine.
+    One document (approved, same project, made by the permit's creator) and up to
+    MAX_HIRA_ACTIVITIES of its activities, from any of its groups."""
+    errors = {}
+    if document is None:
+        if activities:
+            errors['hira_document'] = 'Choose the HIRA document first.'
+        return errors
+    if document.status != HIRADocument.Status.APPROVED:
+        errors['hira_document'] = 'The referenced HIRA is not approved.'
+    elif document.project_id != project_id:
+        errors['hira_document'] = 'The HIRA belongs to a different project.'
+    elif document.created_by_id != owner_id:
+        errors['hira_document'] = 'You can only use a HIRA that you created.'
+    if len(activities) > MAX_HIRA_ACTIVITIES:
+        errors['hira_activity_ids'] = f'At most {MAX_HIRA_ACTIVITIES} activities can be linked to one permit.'
+    elif any(a.group.hira_document_id != document.id for a in activities):
+        errors['hira_activity_ids'] = 'All activities must belong to the selected HIRA document.'
+    return errors
+
+
 def incomplete_fields(permit):
     form = FORMS[permit.permit_type]
     errors = {}
@@ -108,25 +134,28 @@ def submit(permit, user, request, location):
         raise InvalidTransition(f'Cannot submit a permit with status "{permit.status}".')
     ensure_creator_can_work(permit.project_id, user)
 
-    activity = permit.hira_activity
-    hira = activity.group.hira_document
-    if hira.status != HIRADocument.Status.APPROVED:
-        raise ValidationError({'hira_activity': 'The referenced HIRA is not approved.'})
-    if hira.project_id != permit.project_id:
-        raise ValidationError({'hira_activity': 'The HIRA belongs to a different project.'})
-    if hira.created_by_id != permit.created_by_id:
-        raise ValidationError({'hira_activity': 'A permit can only use a HIRA created by the same subcontractor.'})
-    errors = incomplete_fields(permit)
+    document = permit.hira_document
+    activities = list(permit.hira_activities.select_related('group'))
+    errors = validate_hira_selection(permit.project_id, permit.created_by_id, document, activities)
+    if document is None or not activities:
+        errors.setdefault('hira_activity_ids', 'Link at least one HIRA activity before submitting.')
+    errors.update(incomplete_fields(permit))
     if not permit.photos.filter(stage=Stage.BEFORE).exists():
         errors['photos'] = 'Upload at least one "before" photo before submitting.'
-    if activity.initial_category in routing.MK_CATEGORIES and not mk.active_contacts(permit.project_id).exists():
+    have = set(permit.attachments.values_list('kind', flat=True))
+    missing = [k for k in Kind.values if k not in have]
+    if missing:
+        errors['attachments'] = ('Attach at least one PDF of each kind. Missing: '
+                                 + ', '.join(missing) + '.')
+    category = routing.highest(a.initial_category for a in activities) if activities else None
+    if category in routing.MK_CATEGORIES and not mk.active_contacts(permit.project_id).exists():
         errors['mk'] = ('This permit needs MK approval, but the project has no active MK contact. '
                         'Ask HSE to add one to the project.')
     if errors:
         raise ValidationError(errors)
 
     resubmission = permit.status == S.REJECTED
-    permit.risk_category = activity.initial_category      # locks the chain for this round
+    permit.risk_category = category      # the highest linked activity decides the chain, for this round
     permit.submission_round += 1
     permit.status = routing.first_status(permit.risk_category)
     permit.save(update_fields=['risk_category', 'submission_round', 'status', 'updated_at'])
@@ -154,7 +183,7 @@ def decide(permit, user, request, decision, remarks='', location=None):
         if role in GEO_STEPS and location is None:
             raise ValidationError({'location': 'Your current location is required to approve: '
                                                'latitude, longitude, accuracy and captured_at.'})
-        if permit.hira_activity.group.hira_document.status != HIRADocument.Status.APPROVED:
+        if permit.hira_document.status != HIRADocument.Status.APPROVED:
             raise InvalidTransition('The referenced HIRA is no longer approved. Reject this permit instead.')
         new_status, action = routing.status_after(permit.risk_category, role), Action.APPROVED
         if new_status == S.PENDING_MK:
@@ -274,6 +303,58 @@ def delete_photo(permit, user, request, photo_id):
     return permit
 
 
+def _require_editable_attachments(permit):
+    if permit.status not in EDITABLE_STATUSES:
+        raise InvalidTransition('Attachments can only be changed while the permit is a draft or rejected.')
+
+
+@transaction.atomic
+def add_attachments(permit, user, request, kind, files):
+    permit = _lock(permit.pk)
+    if permit.created_by_id != user.id:
+        raise PermissionDenied('Only the creator can add attachments.')
+    _require_editable_attachments(permit)
+    ensure_creator_can_work(permit.project_id, user)
+    if not files:
+        raise ValidationError({'files': 'No file received. Send the PDFs in the "files" field.'})
+    have = permit.attachments.filter(kind=kind).count()
+    if have + len(files) > evidence.MAX_ATTACHMENTS_PER_KIND:
+        raise ValidationError({'files': f'At most {evidence.MAX_ATTACHMENTS_PER_KIND} files of this kind '
+                                        f'({have} already uploaded).'})
+    checked = [evidence.inspect_pdf(f) for f in files]     # every file is checked before any is uploaded
+
+    storage, uploaded = get_storage(), []
+    try:
+        for data, name in checked:
+            path = f'permits/{permit.pk}/attachments/{kind}/{uuid.uuid4().hex}.pdf'
+            storage.upload(path, data, 'application/pdf')
+            uploaded.append(path)
+            PermitAttachment.objects.create(permit=permit, kind=kind, storage_path=path,
+                                            original_name=name, size=len(data), uploaded_by=user)
+        log_event(permit, PAction.ATTACHMENT_ADDED, request=request, remarks=f'{kind}: {len(uploaded)} file(s)')
+    except Exception:
+        discard_objects(uploaded)       # the transaction rolls the rows back; remove the files too
+        raise
+    return permit
+
+
+@transaction.atomic
+def delete_attachment(permit, user, request, attachment_id):
+    permit = _lock(permit.pk)
+    if permit.created_by_id != user.id:
+        raise PermissionDenied('Only the creator can remove attachments.')
+    attachment = permit.attachments.filter(pk=attachment_id).first()
+    if attachment is None:
+        raise NotFound('Attachment not found.')
+    _require_editable_attachments(permit)
+    ensure_creator_can_work(permit.project_id, user)
+    path = attachment.storage_path
+    attachment.delete()
+    log_event(permit, PAction.ATTACHMENT_REMOVED, request=request, remarks=f'{attachment.kind}: {path}')
+    transaction.on_commit(lambda: discard_objects([path]))
+    return permit
+
+
 @transaction.atomic
 def set_number(permit, user, request, number):
     permit = _lock(permit.pk)
@@ -291,7 +372,7 @@ def set_number(permit, user, request, number):
 def cancel_for_hira(hira, user, request, reason):
     """Cancel every permit that rests on this HIRA and is not already closed or cancelled.
     Called from hira.services.cancel inside its transaction. Returns how many were cancelled."""
-    permits = (Permit.objects.filter(hira_activity__group__hira_document=hira)
+    permits = (Permit.objects.filter(hira_document=hira)
                .exclude(status__in=FINAL_STATUSES).order_by('pk'))
     for permit in permits:
         cancel(permit, user, request, f'HIRA #{hira.pk} was cancelled: {reason}')

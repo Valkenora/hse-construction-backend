@@ -13,7 +13,7 @@ from users.models import User
 from users.permissions import HasRole
 from . import mk, services
 from .forms import ENABLED_TYPES, FORMS, WAH
-from .models import Permit, PermitApproval, PermitPhoto
+from .models import Permit, PermitApproval, PermitAttachment, PermitPhoto
 from .selectors import visible_permits
 from .serializers import (CloseRequestSerializer, DecisionSerializer, PermitDetailSerializer,
                           PermitListSerializer, SubmitSerializer)
@@ -31,6 +31,7 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
             'destroy': (R.SUBCONTRACTOR,), 'submit': (R.SUBCONTRACTOR,),
             'request_close': (R.SUBCONTRACTOR,), 'photos': (R.SUBCONTRACTOR,),
             'delete_photo': (R.SUBCONTRACTOR,),
+            'attachments': (R.SUBCONTRACTOR,), 'delete_attachment': (R.SUBCONTRACTOR,),
             'approve': (R.SUPERVISOR, R.HSE_OFFICER, R.PROJECT_MANAGER),
             'reject': (R.SUPERVISOR, R.HSE_OFFICER, R.PROJECT_MANAGER),
             'confirm_close': (R.HSE_OFFICER,),
@@ -45,10 +46,11 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = visible_permits(self.request.user).select_related(
-            'project', 'created_by', 'cancelled_by', 'closed_by', 'hira_activity__group__hira_document')
+            'project', 'created_by', 'cancelled_by', 'closed_by', 'hira_document')
         if self.action != 'list':
             qs = qs.prefetch_related('approvals__decided_by', 'photos__uploaded_by',
-                                     'geo_stamps__recorded_by', 'mk_requests__contact')
+                                     'geo_stamps__recorded_by', 'mk_requests__contact',
+                                     'hira_activities__group', 'attachments__uploaded_by')
         p = self.request.query_params
         for key in ('project', 'status', 'risk_category', 'permit_type'):
             if p.get(key):
@@ -78,7 +80,8 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
         permit = services.lock_for_edit(instance.pk, self.request.user)
         if permit.submission_round > 0:
             raise services.InvalidTransition('A permit that has been submitted cannot be deleted.')
-        paths = list(instance.photos.values_list('storage_path', flat=True))
+        paths = (list(instance.photos.values_list('storage_path', flat=True))
+                 + list(instance.attachments.values_list('storage_path', flat=True)))
         log_event(instance, Action.DELETED, request=self.request)
         instance.delete()
         if paths:      # the rows are gone; remove the files too, once the delete has committed
@@ -154,4 +157,19 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
     def mk_resend(self, request, pk=None):
         """Issue fresh MK links (old ones stop working) while the permit waits for MK."""
         mk.resend_links(self.get_object(), request)
+        return self._detail()
+
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser])
+    def attachments(self, request, pk=None):
+        """multipart/form-data: `kind` ("medical" | "certificate") and one or more PDFs in `files`."""
+        kind = request.data.get('kind')
+        if kind not in PermitAttachment.Kind.values:
+            raise ValidationError({'kind': 'Must be "medical" or "certificate".'})
+        services.add_attachments(self.get_object(), request.user, request, kind,
+                                 request.FILES.getlist('files'))
+        return Response(self.get_serializer(self.get_object()).data, status=201)
+
+    @action(detail=True, methods=['delete'], url_path=r'attachments/(?P<attachment_id>\d+)')
+    def delete_attachment(self, request, pk=None, attachment_id=None):
+        services.delete_attachment(self.get_object(), request.user, request, int(attachment_id))
         return self._detail()

@@ -21,6 +21,9 @@ def snapshot_of(instance):
         if isinstance(f, models.FileField):
             value = value.name if value else ''
         data[f.name] = value
+    extra = getattr(instance, 'audit_extra', None)     # optional: related data worth freezing too
+    if extra is not None:
+        data.update(extra())
     return data
 
 

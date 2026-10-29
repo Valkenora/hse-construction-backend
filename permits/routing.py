@@ -35,3 +35,11 @@ def status_after(category, role):
 
 def steps_for(category):
     return [str(r) for r in CHAINS[category]] + (['mk'] if category in MK_CATEGORIES else [])
+
+
+CATEGORY_ORDER = 'RMTE'      # lowest to highest. Not alphabetical, so never compare the letters directly.
+
+
+def highest(categories):
+    """The riskiest of several initial categories: the one that decides the approval chain."""
+    return max(categories, key=CATEGORY_ORDER.index)

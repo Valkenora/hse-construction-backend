@@ -46,7 +46,8 @@ class Base(TestCase):
 
     def payload(self, act, **over):
         data = {
-            'project': self.p1.id, 'hira_activity': act.id, 'permit_type': 'working_at_height',
+            'project': self.p1.id, 'hira_document': act.group.hira_document_id, 'hira_activity_ids': [act.id],
+            'permit_type': 'working_at_height',
             'work_date': '2026-10-20', 'work_start': '08:00', 'work_end': '16:00',
             'work_location': 'Lantai 3', 'work_description': 'Pasang bekisting',
             'equipment_used': 'Tangga', 'person_in_charge': 'Budi', 'worker_count': 4,
@@ -75,17 +76,19 @@ class OwnershipAndLockTests(Base):
         theirs = self.make_hira(owner=self.sub)
         r = self.call(self.sub2, 'post', URL, self.payload(theirs))
         self.assertEqual(r.status_code, 400)
-        self.assertIn('hira_activity', r.data)
+        self.assertIn('hira_document', r.data)
         self.assertEqual(Permit.objects.count(), 0)
         self.create(act=self.make_hira(owner=self.sub2), user=self.sub2)    # their own is fine
 
     def test_submit_rechecks_ownership_even_if_the_row_was_made_another_way(self):
         pid = self.create(act=self.make_hira(owner=self.sub2), user=self.sub2)
-        Permit.objects.filter(pk=pid).update(hira_activity=self.make_hira(owner=self.sub))
+        stolen = self.make_hira(owner=self.sub)                    # someone else's HIRA, linked behind the API's back
+        Permit.objects.filter(pk=pid).update(hira_document=stolen.group.hira_document)
+        Permit.objects.get(pk=pid).hira_activities.set([stolen])
         add_photo(pid)
         r = self.call(self.sub2, 'post', f'{URL}{pid}/submit/', LOC)
         self.assertEqual(r.status_code, 400)
-        self.assertIn('hira_activity', r.data)
+        self.assertIn('hira_document', r.data)
 
     def test_patch_is_refused_by_the_lock_before_the_body_is_validated(self):
         pid = self.create()
@@ -102,17 +105,18 @@ class OwnershipAndLockTests(Base):
         ok = self.call(self.sub, 'patch', f'{URL}{pid}/', {'work_description': 'Fixed typo'})
         self.assertEqual((ok.status_code, ok.data['work_description']), (200, 'Fixed typo'))
         # but choosing a HIRA is checked: not approved -> 400, someone else's -> 400, valid -> 200
-        bad = self.call(self.sub, 'patch', f'{URL}{pid}/', {'hira_activity': act.id})
-        self.assertEqual(bad.status_code, 200)                      # unchanged HIRA: not re-checked
+        same = self.call(self.sub, 'patch', f'{URL}{pid}/', {'hira_document': act.group.hira_document_id,
+                                                              'hira_activity_ids': [act.id]})
+        self.assertEqual(same.status_code, 400)                     # explicitly choosing it again IS checked
         other = self.make_hira(status=HIRADocument.Status.DRAFT)
-        self.assertEqual(self.call(self.sub, 'patch', f'{URL}{pid}/',
-                                   {'hira_activity': other.id}).status_code, 400)
+        self.assertEqual(self.call(self.sub, 'patch', f'{URL}{pid}/', {
+            'hira_document': other.group.hira_document_id, 'hira_activity_ids': [other.id]}).status_code, 400)
         foreign = self.make_hira(owner=self.sub2)
-        self.assertEqual(self.call(self.sub, 'patch', f'{URL}{pid}/',
-                                   {'hira_activity': foreign.id}).status_code, 400)
+        self.assertEqual(self.call(self.sub, 'patch', f'{URL}{pid}/', {
+            'hira_document': foreign.group.hira_document_id, 'hira_activity_ids': [foreign.id]}).status_code, 400)
         good = self.make_hira()
-        self.assertEqual(self.call(self.sub, 'patch', f'{URL}{pid}/',
-                                   {'hira_activity': good.id}).status_code, 200)
+        self.assertEqual(self.call(self.sub, 'patch', f'{URL}{pid}/', {
+            'hira_document': good.group.hira_document_id, 'hira_activity_ids': [good.id]}).status_code, 200)
 
     def test_patch_still_writes_one_audit_entry(self):
         pid = self.create()

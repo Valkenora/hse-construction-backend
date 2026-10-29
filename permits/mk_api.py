@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from . import mk, services
 from .forms import FORMS
 from .models import PermitApproval, PermitPhoto
+from .serializers import hira_layout
 
 
 class OTPSerializer(serializers.Serializer):
@@ -29,9 +30,9 @@ class RejectSerializer(ApproveSerializer):
 
 
 def permit_payload(permit):
-    activity = permit.hira_activity
     photos = list(permit.photos.filter(stage=PermitPhoto.Stage.BEFORE))
-    urls = services.signed_urls([p.storage_path for p in photos]) if photos else {}
+    files = list(permit.attachments.all())
+    urls = services.signed_urls([p.storage_path for p in photos] + [a.storage_path for a in files])
     rnd = permit.submission_round
     return {
         'id': permit.pk,
@@ -47,11 +48,7 @@ def permit_payload(permit):
         'ppe': permit.ppe, 'ppe_other': permit.ppe_other,
         'risk_category': permit.risk_category,
         'applicant': permit.created_by.full_name,
-        'hira_activity': {
-            'name': activity.activity_name, 'hazard': activity.potential_hazard,
-            'risk_impact': activity.risk_impact, 'initial_score': activity.initial_score,
-            'initial_category': activity.initial_category,
-        },
+        'hira': hira_layout(permit),    # the linked document, with only the selected activities
         'form': FORMS[permit.permit_type],   # labels for the checklist, areas and PPE
         'approvals': [{
             'step': a.step, 'decision': a.decision, 'remarks': a.remarks, 'decided_at': a.decided_at,
@@ -62,6 +59,8 @@ def permit_payload(permit):
             'accuracy': g.accuracy, 'captured_at': g.captured_at,
         } for g in permit.geo_stamps.all() if g.submission_round == rnd],
         'photos': [{'id': p.pk, 'stage': p.stage, 'url': urls.get(p.storage_path)} for p in photos],
+        'attachments': [{'id': a.pk, 'kind': a.kind, 'original_name': a.original_name, 'size': a.size,
+                         'url': urls.get(a.storage_path)} for a in files],
     }
 
 

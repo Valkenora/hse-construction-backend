@@ -3,6 +3,10 @@ from rest_framework.exceptions import ValidationError
 
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
 MAX_PHOTOS_PER_STAGE = 5
+# PDFs are evidence for the approvers, not archive copies: a small limit, and users are told
+# to compress them first (any PDF compressor does it).
+MAX_PDF_BYTES = 3 * 1024 * 1024
+MAX_ATTACHMENTS_PER_KIND = 10
 
 
 def sniff(head):
@@ -17,9 +21,25 @@ def sniff(head):
     return None
 
 
+def clean_name(upload, default):
+    return (upload.name or default).rsplit('/', 1)[-1].rsplit('\\', 1)[-1][:200]
+
+
+def inspect_pdf(upload):
+    """Validate one uploaded PDF by its content. Returns (bytes, clean_name)."""
+    name = clean_name(upload, 'document.pdf')
+    if upload.size > MAX_PDF_BYTES:
+        raise ValidationError({'files': f'{name}: larger than {MAX_PDF_BYTES // (1024 * 1024)} MB. '
+                                        'Compress the PDF first, then upload it again.'})
+    data = upload.read()
+    if data[:5] != b'%PDF-':
+        raise ValidationError({'files': f'{name}: only PDF files are accepted.'})
+    return data, name
+
+
 def inspect(upload):
     """Validate one uploaded file. Returns (bytes, content_type, extension, clean_name)."""
-    name = (upload.name or 'photo').rsplit('/', 1)[-1].rsplit('\\', 1)[-1][:200]
+    name = clean_name(upload, 'photo')
     if upload.size > MAX_PHOTO_BYTES:
         raise ValidationError({'photos': f'{name}: larger than {MAX_PHOTO_BYTES // (1024 * 1024)} MB.'})
     data = upload.read()

@@ -1,12 +1,13 @@
 from rest_framework import serializers
 
-from hira.models import HIRADocument
-from hira.serializers import RemarksSerializer, UserBriefSerializer
+from hira.models import HIRAActivity, HIRADocument
+from hira.serializers import HIRAActivitySerializer, RemarksSerializer, UserBriefSerializer
 from projects.models import ProjectMember
 from users.models import User
 from . import mk, routing, services
 from .forms import ENABLED_TYPES, FORMS
-from .models import MKApprovalRequest, Permit, PermitApproval, PermitGeoStamp, PermitPhoto
+from .models import (MKApprovalRequest, Permit, PermitApproval, PermitAttachment, PermitGeoStamp,
+                     PermitPhoto)
 
 S = Permit.Status
 
@@ -103,6 +104,43 @@ class PermitPhotoSerializer(serializers.ModelSerializer):
         return self.context.get('urls', {}).get(obj.storage_path)
 
 
+class PermitAttachmentSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()   # short-lived signed link; null if storage is down
+    uploaded_by = UserBriefSerializer(read_only=True)
+
+    class Meta:
+        model = PermitAttachment
+        fields = ['id', 'kind', 'original_name', 'size', 'uploaded_by', 'uploaded_at', 'url']
+        read_only_fields = fields
+
+    def get_url(self, obj):
+        return self.context.get('urls', {}).get(obj.storage_path)
+
+
+def hira_layout(permit):
+    """The linked HIRA laid out like the HIRA document, but only with the selected activities
+    (what gets printed after the permit form). None until a document is chosen."""
+    document = permit.hira_document
+    if document is None:
+        return None
+    activities = sorted(permit.hira_activities.all(),
+                        key=lambda a: (a.group.order, a.group_id, a.order, a.id))
+    groups = []
+    for activity in activities:
+        if not groups or groups[-1]['id'] != activity.group_id:
+            g = activity.group
+            groups.append({'id': g.id, 'location_function': g.location_function,
+                           'applicable_regulation': g.applicable_regulation, 'order': g.order,
+                           'activities': []})
+        groups[-1]['activities'].append(HIRAActivitySerializer(activity).data)
+    return {
+        'document': {'id': document.id, 'work_package': document.work_package,
+                     'work_area': document.work_area, 'document_number': document.document_number,
+                     'document_date': document.document_date, 'status': document.status},
+        'groups': groups,
+    }
+
+
 class PermitGeoStampSerializer(serializers.ModelSerializer):
     recorded_by = UserBriefSerializer(read_only=True)
 
@@ -127,13 +165,19 @@ class PermitListSerializer(serializers.ModelSerializer):
 
 
 class PermitDetailSerializer(PermitListSerializer):
-    hira_document = serializers.IntegerField(source='hira_activity.group.hira_document_id', read_only=True)
-    hira_activity_name = serializers.CharField(source='hira_activity.activity_name', read_only=True)
-    hira_initial_category = serializers.CharField(source='hira_activity.initial_category', read_only=True)
+    # Writable: choose one approved HIRA document of yours, then tick up to 10 of its activities.
+    hira_document = serializers.PrimaryKeyRelatedField(queryset=HIRADocument.objects.all(),
+                                                       required=False, allow_null=True)
+    hira_activity_ids = serializers.PrimaryKeyRelatedField(many=True, required=False,
+                                                           queryset=HIRAActivity.objects.all(),
+                                                           source='hira_activities')
+    hira = serializers.SerializerMethodField()                      # read-only layout for display and print
+    highest_initial_category = serializers.SerializerMethodField()  # preview of the chain, before submit
     cancelled_by = UserBriefSerializer(read_only=True)
     closed_by = UserBriefSerializer(read_only=True)
     approvals = PermitApprovalSerializer(many=True, read_only=True)
     photos = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
     geo_stamps = PermitGeoStampSerializer(many=True, read_only=True)
     approval_chain = serializers.SerializerMethodField()
     mk_requests = serializers.SerializerMethodField()
@@ -142,10 +186,10 @@ class PermitDetailSerializer(PermitListSerializer):
 
     class Meta(PermitListSerializer.Meta):
         fields = PermitListSerializer.Meta.fields + [
-            'hira_activity', 'hira_document', 'hira_activity_name', 'hira_initial_category',
+            'hira_document', 'hira_activity_ids', 'hira', 'highest_initial_category',
             'work_start', 'work_end', 'equipment_used', 'person_in_charge', 'worker_count',
             'safety_areas', 'checklist', 'ppe', 'ppe_other',
-            'approvals', 'approval_chain', 'mk_requests', 'photos', 'geo_stamps',
+            'approvals', 'approval_chain', 'mk_requests', 'photos', 'attachments', 'geo_stamps',
             'cancelled_by', 'cancelled_at', 'cancel_reason',
             'post_work_evaluation', 'close_requested_at', 'closed_by', 'closed_at',
             'form', 'allowed_actions',
@@ -159,7 +203,6 @@ class PermitDetailSerializer(PermitListSerializer):
         inst = self.instance
         ptype = attrs.get('permit_type', inst.permit_type if inst else None)
         project = attrs.get('project', inst.project if inst else None)
-        activity = attrs.get('hira_activity', inst.hira_activity if inst else None)
 
         if inst is None:
             if not project.is_active:
@@ -175,18 +218,21 @@ class PermitDetailSerializer(PermitListSerializer):
         if ptype not in ENABLED_TYPES:
             raise serializers.ValidationError({'permit_type': 'This permit type is not available yet.'})
 
-        # The HIRA rules run when a HIRA is being chosen (create, or PATCH that changes it).
+        # The HIRA rules run when the choice is being made (create, or a PATCH that touches it).
         # An edit that leaves the HIRA alone doesn't re-check it: submit and approve do.
-        if inst is None or ('hira_activity' in attrs and attrs['hira_activity'] != inst.hira_activity):
-            hira = activity.group.hira_document
-            if hira.status != HIRADocument.Status.APPROVED:
-                raise serializers.ValidationError({'hira_activity': 'The referenced HIRA is not approved.'})
-            if hira.project_id != project.id:
-                raise serializers.ValidationError({'hira_activity': 'The HIRA belongs to a different project.'})
+        if 'hira_document' in attrs or 'hira_activities' in attrs:
+            document = attrs['hira_document'] if 'hira_document' in attrs else (inst.hira_document if inst else None)
+            if 'hira_activities' in attrs:
+                activities = list(dict.fromkeys(attrs['hira_activities']))      # drop duplicates, keep order
+                attrs['hira_activities'] = activities
+            elif inst is not None and document != inst.hira_document:
+                activities = attrs['hira_activities'] = []                       # new document: start the ticks over
+            else:
+                activities = list(inst.hira_activities.all()) if inst else []
             owner_id = inst.created_by_id if inst else self.context['request'].user.id
-            if hira.created_by_id != owner_id:
-                raise serializers.ValidationError(
-                    {'hira_activity': 'You can only use a HIRA that you created.'})
+            problems = services.validate_hira_selection(project.id, owner_id, document, activities)
+            if problems:
+                raise serializers.ValidationError(problems)
 
         form = FORMS[ptype]
         errors = {}
@@ -229,6 +275,18 @@ class PermitDetailSerializer(PermitListSerializer):
         rows = [r for r in obj.mk_requests.all() if r.submission_round == obj.submission_round]
         return MKRequestSerializer(rows, many=True).data
 
+    def get_hira(self, obj):
+        return hira_layout(obj)
+
+    def get_highest_initial_category(self, obj):
+        activities = list(obj.hira_activities.all())
+        return routing.highest(a.initial_category for a in activities) if activities else None
+
+    def get_attachments(self, obj):
+        rows = list(obj.attachments.all())
+        urls = services.signed_urls([a.storage_path for a in rows]) if rows else {}
+        return PermitAttachmentSerializer(rows, many=True, context={'urls': urls}).data
+
     def get_approval_chain(self, obj):
         if not obj.risk_category:
             return []
@@ -256,6 +314,7 @@ class PermitDetailSerializer(PermitListSerializer):
             'can_request_close': u.id == obj.created_by_id and obj.status == S.APPROVED,
             'can_confirm_close': u.role == User.Role.HSE_OFFICER and obj.status == S.PENDING_CLOSE,
             'can_upload_before_photos': own_editable,
+            'can_manage_attachments': own_editable,
             'can_upload_after_photos': u.id == obj.created_by_id and obj.status == S.APPROVED,
             # the frontend must send latitude/longitude/accuracy/captured_at with these actions
             'decide_requires_location': (services.can_decide(obj, u)

@@ -40,7 +40,10 @@ class EvidenceTests(TestCase):
     def post_photos(self, pid, stage, files, user=None):
         c = APIClient()
         c.force_authenticate(user or self.sub)
-        return c.post(f'{URL}{pid}/photos/', {'stage': stage, 'photos': files}, format='multipart')
+        r = c.post(f'{URL}{pid}/photos/', {'stage': stage, 'photos': files}, format='multipart')
+        if stage == 'before' and r.status_code == 201:
+            base.add_attachments(pid)        # the permit is meant to be submittable after this
+        return r
 
     def send(self, pid, user=None, data=None):
         return self.call(user or self.sub, 'post', f'{URL}{pid}/submit/', data if data is not None else LOC)

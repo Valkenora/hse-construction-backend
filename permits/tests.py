@@ -5,7 +5,7 @@ from audit.models import AuditLog
 from hira.models import HIRAActivity, HIRADocument, HIRAGroup
 from projects.models import Project, ProjectMember, ProjectMKContact
 from users.models import User
-from .models import Permit, PermitPhoto
+from .models import Permit, PermitAttachment, PermitPhoto
 
 R = User.Role
 URL = '/api/permits/'
@@ -14,13 +14,28 @@ LOC = {'latitude': -6.917464, 'longitude': 107.619123, 'accuracy': 12.5,
 MEMORY = override_settings(EVIDENCE_STORAGE='core.storage.MemoryStorage')
 
 
+def add_attachments(pid):
+    """One medical and one certificate PDF, as rows only (the upload endpoint has its own tests)."""
+    permit = Permit.objects.get(pk=pid)
+    for kind in ('medical', 'certificate'):
+        if not PermitAttachment.objects.filter(permit=permit, kind=kind).exists():
+            n = PermitAttachment.objects.count()
+            PermitAttachment.objects.create(permit=permit, kind=kind, size=10, uploaded_by=permit.created_by,
+                                            storage_path=f'permits/{pid}/attachments/{kind}/t{n}.pdf',
+                                            original_name=f'{kind}.pdf')
+
+
 def add_photo(pid, stage='before'):
-    """Attach a photo row directly. The upload endpoint itself is covered in test_evidence."""
+    """Attach a photo row directly. The upload endpoint itself is covered in test_evidence.
+    A 'before' photo also attaches the two required PDFs, so the permit is ready to submit."""
     permit = Permit.objects.get(pk=pid)
     n = PermitPhoto.objects.count()
-    return PermitPhoto.objects.create(
+    photo = PermitPhoto.objects.create(
         permit=permit, stage=stage, storage_path=f'permits/{pid}/{stage}/t{n}.jpg',
         content_type='image/jpeg', size=10, uploaded_by=permit.created_by)
+    if stage == 'before':
+        add_attachments(pid)
+    return photo
 
 
 def ensure_before_photo(pid):
@@ -64,7 +79,8 @@ class PermitWorkflowTests(TestCase):
 
     def payload(self, act, **over):
         data = {
-            'project': self.p1.id, 'hira_activity': act.id, 'permit_type': 'working_at_height',
+            'project': self.p1.id, 'hira_document': act.group.hira_document_id, 'hira_activity_ids': [act.id],
+            'permit_type': 'working_at_height',
             'work_date': '2026-10-20', 'work_start': '08:00', 'work_end': '16:00',
             'work_location': 'Lantai 3', 'work_description': 'Pasang bekisting',
             'equipment_used': 'Tangga', 'person_in_charge': 'Budi', 'worker_count': 4,

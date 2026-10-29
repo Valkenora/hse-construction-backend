@@ -3,7 +3,7 @@ from django.db import models
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db.models import Q
 
-from hira.models import HIRAActivity
+from hira.models import HIRAActivity, HIRADocument
 from projects.models import Project, ProjectMKContact
 
 User = settings.AUTH_USER_MODEL
@@ -31,7 +31,12 @@ class Permit(models.Model):
         CANCELLED          = 'cancelled',          'Dibatalkan'
 
     project       = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='permits')
-    hira_activity = models.ForeignKey(HIRAActivity, on_delete=models.PROTECT, related_name='permits')
+    # The HIRA this permit rests on: one approved document of the creator's, and up to 10 of its
+    # activities (from any group). The document may be chosen after the permit is created.
+    hira_document = models.ForeignKey(HIRADocument, on_delete=models.PROTECT, null=True, blank=True,
+                                      related_name='permits')
+    hira_activities = models.ManyToManyField(HIRAActivity, through='PermitHIRAActivity',
+                                             related_name='permits', blank=True)
     permit_type   = models.CharField(max_length=30, choices=Type.choices)
     # Entered manually by HSE Officer / Coordinator (same convention as HIRA).
     document_number = models.CharField(max_length=100, blank=True)
@@ -80,6 +85,26 @@ class Permit(models.Model):
 
     def get_audit_project(self):
         return self.project
+
+    def audit_extra(self):
+        """Added to every audit snapshot, so history shows which activities were linked."""
+        if self.pk is None:
+            return {}
+        return {'hira_activity_ids': sorted(self.hira_activities.values_list('pk', flat=True))}
+
+
+class PermitHIRAActivity(models.Model):
+    """One HIRA activity linked to a permit."""
+    permit        = models.ForeignKey(Permit, on_delete=models.CASCADE, related_name='hira_links')
+    hira_activity = models.ForeignKey(HIRAActivity, on_delete=models.PROTECT, related_name='permit_links')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['permit', 'hira_activity'], name='uniq_activity_per_permit'),
+        ]
+
+    def __str__(self):
+        return f'{self.permit_id} -> activity {self.hira_activity_id}'
 
 
 class PermitApproval(models.Model):
@@ -223,6 +248,35 @@ class MKApprovalRequest(models.Model):
 
     def __str__(self):
         return f'MK link #{self.pk} permit {self.permit_id} {self.contact.email} ({self.status})'
+
+    def get_audit_project(self):
+        return self.permit.project
+
+
+
+class PermitAttachment(models.Model):
+    """A PDF the approvers read: the workers' fit-to-work (medical) document and their
+    work-at-height certificate. Evidence only: not tied to individual workers, and the system
+    does not check expiry; the approvers judge that. Private storage; only the path is kept."""
+
+    class Kind(models.TextChoices):
+        MEDICAL     = 'medical',     'Surat keterangan sehat (fit to work)'
+        CERTIFICATE = 'certificate', 'Sertifikat kompetensi'
+
+    permit        = models.ForeignKey(Permit, on_delete=models.CASCADE, related_name='attachments')
+    kind          = models.CharField(max_length=12, choices=Kind.choices)
+    storage_path  = models.CharField(max_length=255, unique=True)
+    original_name = models.CharField(max_length=255, blank=True)
+    size          = models.PositiveIntegerField()
+    uploaded_by   = models.ForeignKey(User, on_delete=models.PROTECT, related_name='permit_attachments')
+    uploaded_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at', 'id']
+        indexes = [models.Index(fields=['permit', 'kind'])]
+
+    def __str__(self):
+        return f'{self.permit_id} {self.kind} {self.original_name}'
 
     def get_audit_project(self):
         return self.permit.project

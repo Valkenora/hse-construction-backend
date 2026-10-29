@@ -1,7 +1,8 @@
 from django.contrib import admin
 
 from . import services
-from .models import MKApprovalRequest, Permit, PermitApproval, PermitGeoStamp, PermitPhoto
+from .models import (MKApprovalRequest, Permit, PermitApproval, PermitAttachment, PermitGeoStamp,
+                     PermitHIRAActivity, PermitPhoto)
 from .selectors import visible_permits
 
 # The admin is an inspection window. Permit content, status and approvals change only
@@ -40,6 +41,18 @@ class PermitPhotoInline(ReadOnlyMixin, admin.TabularInline):
     fields = readonly_fields = ['stage', 'storage_path', 'original_name', 'size', 'uploaded_by', 'uploaded_at']
 
 
+class PermitAttachmentInline(ReadOnlyMixin, admin.TabularInline):
+    model = PermitAttachment
+    extra = 0
+    fields = readonly_fields = ['kind', 'storage_path', 'original_name', 'size', 'uploaded_by', 'uploaded_at']
+
+
+class PermitHIRAActivityInline(ReadOnlyMixin, admin.TabularInline):
+    model = PermitHIRAActivity
+    extra = 0
+    fields = readonly_fields = ['hira_activity']
+
+
 class PermitGeoStampInline(ReadOnlyMixin, admin.TabularInline):
     model = PermitGeoStamp
     extra = 0
@@ -62,7 +75,8 @@ class PermitAdmin(admin.ModelAdmin):
     list_filter = ['status', 'permit_type', 'risk_category', 'project']
     search_fields = ['document_number', 'work_location', 'work_description']
     list_select_related = ['project', 'created_by']
-    inlines = [PermitApprovalInline, PermitPhotoInline, PermitGeoStampInline, MKApprovalRequestInline]
+    inlines = [PermitHIRAActivityInline, PermitApprovalInline, PermitPhotoInline, PermitAttachmentInline,
+               PermitGeoStampInline, MKApprovalRequestInline]
     editable_fields = ('document_number',)
 
     def get_queryset(self, request):
