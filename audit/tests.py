@@ -36,8 +36,10 @@ class AuditLogTests(TestCase):
 
     def test_api_is_read_only(self):
         entry = self.make()
+        coordinator = User.objects.create_user(
+            'coord@test.com', 'pass12345', full_name='Coord', role=User.Role.HSE_COORDINATOR)
         client = APIClient()
-        client.force_authenticate(self.user)
+        client.force_authenticate(coordinator)
         url = f'/api/audit/{entry.pk}/'
         self.assertEqual(client.get(url).status_code, 200)   # readable
         self.assertEqual(client.delete(url).status_code, 405)

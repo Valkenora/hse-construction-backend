@@ -3,9 +3,9 @@ from rest_framework import viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 
-from users.models import User
 from .models import AuditLog
-from .serializers import AuditLogSerializer
+from .selectors import can_see_full_record, visible_entries
+from .serializers import AuditDetailSerializer, AuditEntrySerializer
 
 
 class AuditPagination(PageNumberPagination):
@@ -15,20 +15,17 @@ class AuditPagination(PageNumberPagination):
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):  # no PUT/PATCH/DELETE routes exist
-    serializer_class = AuditLogSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = AuditPagination
 
-    def get_queryset(self):
-        user = self.request.user
-        qs = AuditLog.objects.select_related('project', 'user')
+    def get_serializer_class(self):
+        # The list is always the light preview. Only the HSE Officer and Coordinator open the full record.
+        if self.action == 'retrieve' and can_see_full_record(self.request.user):
+            return AuditDetailSerializer
+        return AuditEntrySerializer
 
-        if user.role in (User.Role.HSE_OFFICER, User.Role.HSE_COORDINATOR):
-            pass  # cross-project
-        elif user.role in (User.Role.PROJECT_MANAGER, User.Role.SUPERVISOR):
-            qs = qs.filter(project__members__user=user)
-        else:  # subcontractor: only their own actions, refine when permits exist
-            qs = qs.filter(user=user)
+    def get_queryset(self):
+        qs = visible_entries(self.request.user)
 
         p = self.request.query_params
         if p.get('resource_type'):
