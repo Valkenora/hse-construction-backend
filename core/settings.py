@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'permits',
     'notifications',
     'audit',
+    'dashboard',
 ]
 
 MIDDLEWARE = [
