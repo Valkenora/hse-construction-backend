@@ -1,5 +1,9 @@
 from django.db import models, transaction
+from django.dispatch import Signal
 from .models import AuditLog
+
+# Sent inside the same transaction after every audit row. Receivers must not break the caller.
+event_logged = Signal()
 
 
 class Action:
@@ -50,7 +54,7 @@ def log_event(resource, action, *, user=None, request=None, remarks='',
         getter = getattr(resource, 'get_audit_project', None)
         project = getter() if getter else getattr(resource, 'project', None)
     ip, ua = client_meta(request)
-    return AuditLog.objects.create(
+    entry = AuditLog.objects.create(
         resource_type=resource._meta.label_lower,
         resource_id=resource.pk,
         action=action,
@@ -62,6 +66,8 @@ def log_event(resource, action, *, user=None, request=None, remarks='',
         remarks=remarks,
         snapshot=snapshot_of(resource) if with_snapshot else {},
     )
+    event_logged.send(sender=type(resource), resource=resource, entry=entry)
+    return entry
 
 
 class AuditedViewSetMixin:

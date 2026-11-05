@@ -104,3 +104,12 @@ def summary(action, remarks, snapshot):
         step = STEP_LABELS.get(m.group(1), m.group(1).replace('_', ' ').title()) if m else ''
         return f'{step}: {text}' if step and text else (step or text)
     return text
+
+
+def actor_name(user, actor_label):
+    """Who acted, as a short name: the user's name, "Budi (MK)" for the external MK approver, or "Sistem"."""
+    if user is not None:
+        return user.full_name
+    if (actor_label or '').startswith('MK:'):        # "MK: Budi <mk@x> (external, ...)"
+        return actor_label[3:].split('<')[0].strip() + ' (MK)'
+    return 'Sistem'

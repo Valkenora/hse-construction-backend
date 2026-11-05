@@ -35,11 +35,7 @@ class AuditEntrySerializer(serializers.ModelSerializer):
         return obj.project.name if obj.project_id else None
 
     def get_actor_name(self, obj):
-        if obj.user_id:
-            return obj.user.full_name
-        if obj.actor_label.startswith('MK:'):          # "MK: Budi <mk@x> (external, ...)" -> "Budi (MK)"
-            return obj.actor_label[3:].split('<')[0].strip() + ' (MK)'
-        return 'Sistem'
+        return labels.actor_name(obj.user if obj.user_id else None, obj.actor_label)
 
     def get_actor_role(self, obj):
         if obj.user_id:

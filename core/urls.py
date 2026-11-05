@@ -6,6 +6,7 @@ urlpatterns = [
     path('api/users/', include('users.urls')),
     path('api/audit/', include('audit.urls')),
     path('api/dashboard/', include('dashboard.urls')),
+    path('api/notifications/', include('notifications.urls')),
     path('api/projects/', include('projects.urls')),
     path('api/hira/', include('hira.urls')),
     path('api/permits/', include('permits.urls')),
