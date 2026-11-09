@@ -118,27 +118,64 @@ class PermitAttachmentSerializer(serializers.ModelSerializer):
 
 
 def hira_layout(permit):
-    """The linked HIRA laid out like the HIRA document, but only with the selected activities
-    (what gets printed after the permit form). None until a document is chosen."""
-    document = permit.hira_document
-    if document is None:
-        return None
+    """The linked HIRA, laid out document by document like the HIRA documents themselves but only
+    with the selected activities (what gets printed after the permit form).
+    None until at least one activity is linked."""
     activities = sorted(permit.hira_activities.all(),
-                        key=lambda a: (a.group.order, a.group_id, a.order, a.id))
-    groups = []
+                        key=lambda a: (a.group.hira_document_id, a.group.order, a.group_id, a.order, a.id))
+    if not activities:
+        return None
+    documents, flat = [], []
     for activity in activities:
-        if not groups or groups[-1]['id'] != activity.group_id:
-            g = activity.group
-            groups.append({'id': g.id, 'location_function': g.location_function,
-                           'applicable_regulation': g.applicable_regulation, 'order': g.order,
-                           'activities': []})
+        group, document = activity.group, activity.group.hira_document
+        if not documents or documents[-1]['document']['id'] != document.id:
+            documents.append({
+                'document': {'id': document.id, 'work_package': document.work_package,
+                             'work_area': document.work_area, 'document_number': document.document_number,
+                             'document_date': document.document_date, 'status': document.status,
+                             'created_by_name': document.created_by.full_name},
+                'groups': []})
+        groups = documents[-1]['groups']
+        if not groups or groups[-1]['id'] != group.id:
+            entry = {'id': group.id, 'location_function': group.location_function,
+                     'applicable_regulation': group.applicable_regulation, 'order': group.order,
+                     'activities': []}
+            groups.append(entry)
+            flat.append({**entry, 'document_id': document.id, 'activities': entry['activities']})
         groups[-1]['activities'].append(HIRAActivitySerializer(activity).data)
     return {
-        'document': {'id': document.id, 'work_package': document.work_package,
-                     'work_area': document.work_area, 'document_number': document.document_number,
-                     'document_date': document.document_date, 'status': document.status},
-        'groups': groups,
+        'documents': documents,
+        # Deprecated, kept so screens built before 9 Nov keep working: the first document, and the
+        # groups of every document in one flat list (each with its `document_id`).
+        'document': documents[0]['document'],
+        'groups': flat,
     }
+
+
+class HIRAOptionSerializer(serializers.ModelSerializer):
+    """One approved HIRA document of the project with its groups and activities: what a
+    subcontractor ticks from when linking a permit. Any subcontractor's document, `mine` says whose."""
+    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+    mine = serializers.SerializerMethodField()
+    groups = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HIRADocument
+        fields = ['id', 'work_package', 'work_area', 'document_number', 'document_date',
+                  'created_by_name', 'mine', 'groups']
+        read_only_fields = fields
+
+    def get_mine(self, obj):
+        return obj.created_by_id == self.context['request'].user.id
+
+    def get_groups(self, obj):
+        out = []
+        for g in sorted(obj.groups.all(), key=lambda g: (g.order, g.id)):
+            acts = sorted(g.activities.all(), key=lambda a: (a.order, a.id))
+            out.append({'id': g.id, 'location_function': g.location_function,
+                        'applicable_regulation': g.applicable_regulation, 'order': g.order,
+                        'activities': HIRAActivitySerializer(acts, many=True).data})
+        return out
 
 
 class PermitGeoStampSerializer(serializers.ModelSerializer):
@@ -165,12 +202,12 @@ class PermitListSerializer(serializers.ModelSerializer):
 
 
 class PermitDetailSerializer(PermitListSerializer):
-    # Writable: choose one approved HIRA document of yours, then tick up to 10 of its activities.
-    hira_document = serializers.PrimaryKeyRelatedField(queryset=HIRADocument.objects.all(),
-                                                       required=False, allow_null=True)
-    hira_activity_ids = serializers.PrimaryKeyRelatedField(many=True, required=False,
-                                                           queryset=HIRAActivity.objects.all(),
-                                                           source='hira_activities')
+    # Writable: tick up to 10 activities from approved HIRA documents of this project.
+    hira_activity_ids = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, source='hira_activities',
+        queryset=HIRAActivity.objects.select_related('group__hira_document'))
+    hira_document_ids = serializers.SerializerMethodField()         # read-only: the documents they come from
+    hira_document = serializers.SerializerMethodField()             # DEPRECATED read-only, see get_hira_document
     hira = serializers.SerializerMethodField()                      # read-only layout for display and print
     highest_initial_category = serializers.SerializerMethodField()  # preview of the chain, before submit
     cancelled_by = UserBriefSerializer(read_only=True)
@@ -186,7 +223,7 @@ class PermitDetailSerializer(PermitListSerializer):
 
     class Meta(PermitListSerializer.Meta):
         fields = PermitListSerializer.Meta.fields + [
-            'hira_document', 'hira_activity_ids', 'hira', 'highest_initial_category',
+            'hira_activity_ids', 'hira_document_ids', 'hira_document', 'hira', 'highest_initial_category',
             'work_start', 'work_end', 'equipment_used', 'person_in_charge', 'worker_count',
             'safety_areas', 'checklist', 'ppe', 'ppe_other',
             'approvals', 'approval_chain', 'mk_requests', 'photos', 'attachments', 'geo_stamps',
@@ -220,17 +257,9 @@ class PermitDetailSerializer(PermitListSerializer):
 
         # The HIRA rules run when the choice is being made (create, or a PATCH that touches it).
         # An edit that leaves the HIRA alone doesn't re-check it: submit and approve do.
-        if 'hira_document' in attrs or 'hira_activities' in attrs:
-            document = attrs['hira_document'] if 'hira_document' in attrs else (inst.hira_document if inst else None)
-            if 'hira_activities' in attrs:
-                activities = list(dict.fromkeys(attrs['hira_activities']))      # drop duplicates, keep order
-                attrs['hira_activities'] = activities
-            elif inst is not None and document != inst.hira_document:
-                activities = attrs['hira_activities'] = []                       # new document: start the ticks over
-            else:
-                activities = list(inst.hira_activities.all()) if inst else []
-            owner_id = inst.created_by_id if inst else self.context['request'].user.id
-            problems = services.validate_hira_selection(project.id, owner_id, document, activities)
+        if 'hira_activities' in attrs:
+            attrs['hira_activities'] = list(dict.fromkeys(attrs['hira_activities']))   # drop duplicates
+            problems = services.validate_hira_selection(project.id, attrs['hira_activities'])
             if problems:
                 raise serializers.ValidationError(problems)
 
@@ -277,6 +306,15 @@ class PermitDetailSerializer(PermitListSerializer):
 
     def get_hira(self, obj):
         return hira_layout(obj)
+
+    def get_hira_document_ids(self, obj):
+        return sorted({a.group.hira_document_id for a in obj.hira_activities.all()})
+
+    def get_hira_document(self, obj):
+        """Deprecated, for screens built before 9 Nov: the document id when every ticked activity comes
+        from one document, else null. Ignored on input. Use hira_document_ids."""
+        ids = self.get_hira_document_ids(obj)
+        return ids[0] if len(ids) == 1 else None
 
     def get_highest_initial_category(self, obj):
         activities = list(obj.hira_activities.all())

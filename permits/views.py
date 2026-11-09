@@ -1,22 +1,24 @@
 from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from audit.services import Action, log_event
 from core.mixins import LockedPartialUpdateMixin
+from hira.models import HIRADocument
 from hira.serializers import CancelSerializer, SetNumberSerializer
+from projects.models import ProjectMember
 from users.models import User
 from users.permissions import HasRole
 from . import mk, services
 from .forms import ENABLED_TYPES, FORMS, WAH
 from .models import Permit, PermitApproval, PermitAttachment, PermitPhoto
 from .selectors import visible_permits
-from .serializers import (CloseRequestSerializer, DecisionSerializer, PermitDetailSerializer,
-                          PermitListSerializer, SubmitSerializer)
+from .serializers import (CloseRequestSerializer, DecisionSerializer, HIRAOptionSerializer,
+                          PermitDetailSerializer, PermitListSerializer, SubmitSerializer)
 
 R = User.Role
 WRITE_METHODS = ['get', 'post', 'patch', 'delete', 'head', 'options']  # no PUT
@@ -32,6 +34,7 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
             'request_close': (R.SUBCONTRACTOR,), 'photos': (R.SUBCONTRACTOR,),
             'delete_photo': (R.SUBCONTRACTOR,),
             'attachments': (R.SUBCONTRACTOR,), 'delete_attachment': (R.SUBCONTRACTOR,),
+            'hira_options': (R.SUBCONTRACTOR,),
             'approve': (R.SUPERVISOR, R.HSE_OFFICER, R.PROJECT_MANAGER),
             'reject': (R.SUPERVISOR, R.HSE_OFFICER, R.PROJECT_MANAGER),
             'confirm_close': (R.HSE_OFFICER,),
@@ -46,11 +49,11 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = visible_permits(self.request.user).select_related(
-            'project', 'created_by', 'cancelled_by', 'closed_by', 'hira_document')
+            'project', 'created_by', 'cancelled_by', 'closed_by')
         if self.action != 'list':
             qs = qs.prefetch_related('approvals__decided_by', 'photos__uploaded_by',
                                      'geo_stamps__recorded_by', 'mk_requests__contact',
-                                     'hira_activities__group', 'attachments__uploaded_by')
+                                     'hira_activities__group__hira_document__created_by', 'attachments__uploaded_by')
         p = self.request.query_params
         for key in ('project', 'status', 'risk_category', 'permit_type'):
             if p.get(key):
@@ -158,6 +161,18 @@ class PermitViewSet(LockedPartialUpdateMixin, viewsets.ModelViewSet):
         """Issue fresh MK links (old ones stop working) while the permit waits for MK."""
         mk.resend_links(self.get_object(), request)
         return self._detail()
+
+    @action(detail=False, methods=['get'], url_path='hira-options')
+    def hira_options(self, request):
+        """The HIRA documents a permit in this project may link to: every approved one, whoever made it."""
+        project_id = request.query_params.get('project', '')
+        if not project_id.isdigit():
+            raise ValidationError({'project': 'Required: the project id.'})
+        if not ProjectMember.objects.filter(project_id=project_id, user=request.user).exists():
+            raise PermissionDenied('You are not a member of this project.')
+        docs = (HIRADocument.objects.filter(project_id=project_id, status=HIRADocument.Status.APPROVED)
+                .select_related('created_by').prefetch_related('groups__activities').order_by('-id'))
+        return Response(HIRAOptionSerializer(docs, many=True, context={'request': request}).data)
 
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser])
     def attachments(self, request, pk=None):

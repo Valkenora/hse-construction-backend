@@ -31,10 +31,8 @@ class Permit(models.Model):
         CANCELLED          = 'cancelled',          'Dibatalkan'
 
     project       = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='permits')
-    # The HIRA this permit rests on: one approved document of the creator's, and up to 10 of its
-    # activities (from any group). The document may be chosen after the permit is created.
-    hira_document = models.ForeignKey(HIRADocument, on_delete=models.PROTECT, null=True, blank=True,
-                                      related_name='permits')
+    # The HIRA this permit rests on: up to 10 activities, from any approved HIRA documents of the
+    # same project (any subcontractor's). Chosen after the permit is created.
     hira_activities = models.ManyToManyField(HIRAActivity, through='PermitHIRAActivity',
                                              related_name='permits', blank=True)
     permit_type   = models.CharField(max_length=30, choices=Type.choices)
@@ -85,6 +83,11 @@ class Permit(models.Model):
 
     def get_audit_project(self):
         return self.project
+
+    def has_unapproved_hira(self):
+        """True if any linked activity sits in a HIRA document that is no longer approved."""
+        return (self.hira_activities
+                .exclude(group__hira_document__status=HIRADocument.Status.APPROVED).exists())
 
     def audit_extra(self):
         """Added to every audit snapshot, so history shows which activities were linked."""

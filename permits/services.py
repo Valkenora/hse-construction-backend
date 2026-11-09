@@ -92,26 +92,22 @@ def lock_for_edit(pk, user):
     return permit
 
 
-def validate_hira_selection(project_id, owner_id, document, activities):
+def validate_hira_selection(project_id, activities):
     """The rules for what a permit may link to. Returns {field: message}, empty if fine.
-    One document (approved, same project, made by the permit's creator) and up to
-    MAX_HIRA_ACTIVITIES of its activities, from any of its groups."""
-    errors = {}
-    if document is None:
-        if activities:
-            errors['hira_document'] = 'Choose the HIRA document first.'
-        return errors
-    if document.status != HIRADocument.Status.APPROVED:
-        errors['hira_document'] = 'The referenced HIRA is not approved.'
-    elif document.project_id != project_id:
-        errors['hira_document'] = 'The HIRA belongs to a different project.'
-    elif document.created_by_id != owner_id:
-        errors['hira_document'] = 'You can only use a HIRA that you created.'
+    Up to MAX_HIRA_ACTIVITIES activities, each from an approved HIRA document of the permit's own
+    project. Documents may differ and may belong to any subcontractor of that project."""
     if len(activities) > MAX_HIRA_ACTIVITIES:
-        errors['hira_activity_ids'] = f'At most {MAX_HIRA_ACTIVITIES} activities can be linked to one permit.'
-    elif any(a.group.hira_document_id != document.id for a in activities):
-        errors['hira_activity_ids'] = 'All activities must belong to the selected HIRA document.'
-    return errors
+        return {'hira_activity_ids': f'At most {MAX_HIRA_ACTIVITIES} activities can be linked to one permit.'}
+    documents = {a.group.hira_document for a in activities}
+    elsewhere = sorted(d.pk for d in documents if d.project_id != project_id)
+    if elsewhere:
+        return {'hira_activity_ids': 'These HIRA documents belong to a different project: '
+                                     + ', '.join(f'#{pk}' for pk in elsewhere) + '.'}
+    unapproved = sorted(d.pk for d in documents if d.status != HIRADocument.Status.APPROVED)
+    if unapproved:
+        return {'hira_activity_ids': 'These HIRA documents are not approved: '
+                                     + ', '.join(f'#{pk}' for pk in unapproved) + '.'}
+    return {}
 
 
 def incomplete_fields(permit):
@@ -134,10 +130,9 @@ def submit(permit, user, request, location):
         raise InvalidTransition(f'Cannot submit a permit with status "{permit.status}".')
     ensure_creator_can_work(permit.project_id, user)
 
-    document = permit.hira_document
-    activities = list(permit.hira_activities.select_related('group'))
-    errors = validate_hira_selection(permit.project_id, permit.created_by_id, document, activities)
-    if document is None or not activities:
+    activities = list(permit.hira_activities.select_related('group__hira_document'))
+    errors = validate_hira_selection(permit.project_id, activities)
+    if not activities:
         errors.setdefault('hira_activity_ids', 'Link at least one HIRA activity before submitting.')
     errors.update(incomplete_fields(permit))
     if not permit.photos.filter(stage=Stage.BEFORE).exists():
@@ -183,8 +178,8 @@ def decide(permit, user, request, decision, remarks='', location=None):
         if role in GEO_STEPS and location is None:
             raise ValidationError({'location': 'Your current location is required to approve: '
                                                'latitude, longitude, accuracy and captured_at.'})
-        if permit.hira_document.status != HIRADocument.Status.APPROVED:
-            raise InvalidTransition('The referenced HIRA is no longer approved. Reject this permit instead.')
+        if permit.has_unapproved_hira():
+            raise InvalidTransition('A linked HIRA is no longer approved. Reject this permit instead.')
         new_status, action = routing.status_after(permit.risk_category, role), Action.APPROVED
         if new_status == S.PENDING_MK:
             mk.require_contacts(permit.project_id)      # fail now, not after the decision is saved
@@ -370,10 +365,11 @@ def set_number(permit, user, request, number):
 
 
 def cancel_for_hira(hira, user, request, reason):
-    """Cancel every permit that rests on this HIRA and is not already closed or cancelled.
-    Called from hira.services.cancel inside its transaction. Returns how many were cancelled."""
-    permits = (Permit.objects.filter(hira_document=hira)
-               .exclude(status__in=FINAL_STATUSES).order_by('pk'))
+    """Cancel every permit linked to any activity of this HIRA (whoever made the permit) that is
+    not already closed or cancelled. Called from hira.services.cancel inside its transaction.
+    Returns how many were cancelled."""
+    permits = (Permit.objects.filter(hira_activities__group__hira_document=hira)
+               .exclude(status__in=FINAL_STATUSES).distinct().order_by('pk'))
     for permit in permits:
         cancel(permit, user, request, f'HIRA #{hira.pk} was cancelled: {reason}')
     return len(permits)

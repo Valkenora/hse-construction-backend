@@ -47,7 +47,7 @@ class NotificationTests(TestCase):
     def permit(self, *cats):
         """A submitted-ready permit whose highest category decides the chain (R, M or T)."""
         index = {'R': 0, 'M': 1, 'T': 2}
-        return self.make_permit(self.doc, [self.groups[0][index[c]] for c in cats])
+        return self.make_permit([self.groups[0][index[c]] for c in cats])
 
     def rows(self, user, pid=None, kind=None, rtype='permit'):
         qs = Notification.objects.filter(recipient=user, resource_type=rtype)

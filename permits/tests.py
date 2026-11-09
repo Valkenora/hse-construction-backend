@@ -79,7 +79,7 @@ class PermitWorkflowTests(TestCase):
 
     def payload(self, act, **over):
         data = {
-            'project': self.p1.id, 'hira_document': act.group.hira_document_id, 'hira_activity_ids': [act.id],
+            'project': self.p1.id, 'hira_activity_ids': [act.id],
             'permit_type': 'working_at_height',
             'work_date': '2026-10-20', 'work_start': '08:00', 'work_end': '16:00',
             'work_location': 'Lantai 3', 'work_description': 'Pasang bekisting',

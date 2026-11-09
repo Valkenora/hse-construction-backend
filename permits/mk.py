@@ -308,8 +308,8 @@ def decide(token, request, decision, otp, full_name, remarks=''):
         problem = _check_otp(req, permit, otp, request)
         if problem is None:
             if decision == PermitApproval.Decision.APPROVED:
-                if permit.hira_document.status != HIRADocument.Status.APPROVED:
-                    raise InvalidTransition('The referenced HIRA is no longer approved. Reject this permit instead.')
+                if permit.has_unapproved_hira():
+                    raise InvalidTransition('A linked HIRA is no longer approved. Reject this permit instead.')
                 new_status, action = S.APPROVED, Action.APPROVED
             else:
                 new_status, action = S.REJECTED, Action.REJECTED

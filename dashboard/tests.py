@@ -37,13 +37,13 @@ class DashboardTests(TestCase):
         self.h_officer, _ = self.make_doc([['R']], status=H.PENDING_OFFICER)
         self.h_pm, _ = self.make_doc([['R']], status=H.PENDING_PM)
         # permits by sub: draft, pending supervisor, rejected, cancelled
-        self.p_draft = self.make_permit(self.doc, self.groups[0])
-        self.p_pending = self.make_permit(self.doc, self.groups[0])
+        self.p_draft = self.make_permit(self.groups[0])
+        self.p_pending = self.make_permit(self.groups[0])
         self.submit(self.p_pending)
-        self.p_rejected = self.make_permit(self.doc, self.groups[0])
+        self.p_rejected = self.make_permit(self.groups[0])
         self.submit(self.p_rejected)
         self.call(self.sup, 'post', f'/api/permits/{self.p_rejected}/reject/', {'remarks': 'Ulang'})
-        self.p_cancelled = self.make_permit(self.doc, self.groups[0])
+        self.p_cancelled = self.make_permit(self.groups[0])
         self.submit(self.p_cancelled)
         self.call(self.coord, 'post', f'/api/permits/{self.p_cancelled}/cancel/', {'reason': 'x'})
 
@@ -83,7 +83,7 @@ class DashboardTests(TestCase):
                          {('hira', 'rejected'), ('hira', 'draft'), ('permit', 'rejected'), ('permit', 'draft')})
 
     def test_an_approved_permit_waits_on_its_creator_to_request_closure(self):
-        pid = self.make_permit(self.doc, [self.groups[0][0]])      # category R: supervisor only
+        pid = self.make_permit([self.groups[0][0]])      # category R: supervisor only
         self.submit(pid)
         self.call(self.sup, 'post', f'/api/permits/{pid}/approve/', LOC)
         row = next(r for r in self.tasks(self.sub) if (r['type'], r['id']) == ('permit', pid))

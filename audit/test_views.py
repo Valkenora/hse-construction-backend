@@ -30,10 +30,10 @@ class AuditVisibilityTests(TestCase):
         cache.clear()
         self.setUpFixtures()
         self.doc, self.groups = self.make_doc([['R', 'M']])
-        self.pid = self.make_permit(self.doc, self.groups[0])          # a draft by sub
+        self.pid = self.make_permit(self.groups[0])          # a draft by sub
         self.other_doc, og = self.make_doc([['R']], owner=self.sub2)
         self.other_pid = self.call(self.sub2, 'post', '/api/permits/', self.header(
-            hira_document=self.other_doc.id, hira_activity_ids=[og[0][0].id])).data['id']
+            hira_activity_ids=[og[0][0].id])).data['id']
 
     def entries(self, user, **params):
         r = self.call(user, 'get', URL + ('?' + '&'.join(f'{k}={v}' for k, v in params.items()) if params else ''))
@@ -130,7 +130,7 @@ class AuditVisibilityTests(TestCase):
 
     def test_mk_rows_never_show_emails_and_otp_rows_stay_with_the_hse_roles(self):
         doc, groups = self.make_doc([['T']])
-        pid = self.make_permit(doc, groups[0])
+        pid = self.make_permit(groups[0])
         self.submit(pid)
         for user in (self.sup, self.officer):
             self.call(user, 'post', f'/api/permits/{pid}/approve/', LOC)
