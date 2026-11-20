@@ -108,47 +108,42 @@ class MultiHIRATests(TestCase):
         self.assertEqual(self.submit(pid).status_code, 200)
         self.assertEqual(Permit.objects.get(pk=pid).risk_category, 'T')
 
-    def test_screens_built_before_the_change_still_read_what_they_expect(self):
-        """hira_document and hira.document/groups stay for one-document permits, exactly as before."""
+    def test_the_old_compatibility_fields_are_gone(self):
+        """hira_document, hira.document and hira.groups were removed; hira.documents[] replaces them."""
         doc, groups = self.make_doc([['R', 'M'], ['T']])
         pid = self.make_permit([groups[0][1], groups[1][0]])
         d = self.call(self.sub, 'get', f'{URL}{pid}/').data
-        self.assertEqual(d['hira_document'], doc.id)
-        self.assertEqual(d['hira']['document']['id'], doc.id)
-        self.assertEqual(d['hira']['document']['work_package'], 'WP')
-        self.assertEqual([g['location_function'] for g in d['hira']['groups']], ['G0', 'G1'])
-        self.assertEqual([[a['activity_name'] for a in g['activities']] for g in d['hira']['groups']],
+        self.assertNotIn('hira_document', d)
+        self.assertEqual(set(d['hira']), {'documents'})
+        (document,) = d['hira']['documents']
+        self.assertEqual(document['document']['id'], doc.id)
+        self.assertEqual(document['document']['work_package'], 'WP')
+        self.assertEqual([g['location_function'] for g in document['groups']], ['G0', 'G1'])
+        self.assertEqual([[a['activity_name'] for a in g['activities']] for g in document['groups']],
                          [['M-0.1'], ['T-1.0']])
-        self.assertEqual([g['document_id'] for g in d['hira']['groups']], [doc.id, doc.id])
-        self.assertEqual([g['id'] for g in d['hira']['groups']],
-                         [g['id'] for g in d['hira']['documents'][0]['groups']])
+        self.assertNotIn('document_id', document['groups'][0])
 
-    def test_a_mixed_permit_shows_nothing_ambiguous_in_the_old_fields(self):
+    def test_a_mixed_permit_lists_each_document_with_its_own_groups(self):
         doc_a, ga = self.make_doc([['R']])
         doc_b, gb = self.make_doc([['M']], owner=self.sub2)
         pid = self.make_permit([ga[0][0], gb[0][0]])
         d = self.call(self.sub, 'get', f'{URL}{pid}/').data
-        self.assertIsNone(d['hira_document'])                                   # more than one document
-        self.assertEqual(d['hira']['document']['id'], doc_a.id)                 # fallback: the first one
-        self.assertEqual([(g['document_id'], g['activities'][0]['activity_name']) for g in d['hira']['groups']],
+        self.assertEqual(d['hira_document_ids'], sorted([doc_a.id, doc_b.id]))
+        self.assertEqual([(x['document']['id'], x['groups'][0]['activities'][0]['activity_name'])
+                          for x in d['hira']['documents']],
                          [(doc_a.id, 'R-0.0'), (doc_b.id, 'M-0.0')])           # nothing silently dropped
-        self.assertEqual(len(d['hira']['documents']), 2)
 
-    def test_the_old_fields_cannot_be_written(self):
+    def test_an_old_client_that_still_sends_hira_document_is_ignored_not_rejected(self):
         doc, groups = self.make_doc([['R']])
-        pid = self.make_permit([groups[0][0]])
         other, og = self.make_doc([['M']])
-        r = self.call(self.sub, 'patch', f'{URL}{pid}/', {'hira_document': other.id})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual((r.data['hira_document'], r.data['hira_activity_ids']), (doc.id, [groups[0][0].id]))
-
-    def test_an_old_client_that_still_sends_hira_document_is_not_broken(self):
-        doc, groups = self.make_doc([['R']])
-        r = self.call(self.sub, 'post', URL, {**self.header(), 'hira_document': doc.id,
+        r = self.call(self.sub, 'post', URL, {**self.header(), 'hira_document': other.id,
                                               'hira_activity_ids': [groups[0][0].id]})
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertEqual(r.data['hira_activity_ids'], [groups[0][0].id])
-        self.assertEqual(r.data['hira_document'], doc.id)          # deprecated, read-only, derived from the activities
+        self.assertEqual((r.data['hira_activity_ids'], r.data['hira_document_ids']),
+                         ([groups[0][0].id], [doc.id]))                        # the activities decide
+        self.assertNotIn('hira_document', r.data)
+        r = self.call(self.sub, 'patch', f'{URL}{r.data["id"]}/', {'hira_document': other.id})
+        self.assertEqual((r.status_code, r.data['hira_document_ids']), (200, [doc.id]))
 
     def test_a_permit_can_be_created_first_and_linked_afterwards(self):
         doc, groups = self.make_doc([['R', 'M']])

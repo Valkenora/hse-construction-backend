@@ -125,7 +125,7 @@ def hira_layout(permit):
                         key=lambda a: (a.group.hira_document_id, a.group.order, a.group_id, a.order, a.id))
     if not activities:
         return None
-    documents, flat = [], []
+    documents = []
     for activity in activities:
         group, document = activity.group, activity.group.hira_document
         if not documents or documents[-1]['document']['id'] != document.id:
@@ -141,15 +141,8 @@ def hira_layout(permit):
                      'applicable_regulation': group.applicable_regulation, 'order': group.order,
                      'activities': []}
             groups.append(entry)
-            flat.append({**entry, 'document_id': document.id, 'activities': entry['activities']})
         groups[-1]['activities'].append(HIRAActivitySerializer(activity).data)
-    return {
-        'documents': documents,
-        # Deprecated, kept so screens built before 9 Nov keep working: the first document, and the
-        # groups of every document in one flat list (each with its `document_id`).
-        'document': documents[0]['document'],
-        'groups': flat,
-    }
+    return {'documents': documents}
 
 
 class HIRAOptionSerializer(serializers.ModelSerializer):
@@ -207,7 +200,6 @@ class PermitDetailSerializer(PermitListSerializer):
         many=True, required=False, source='hira_activities',
         queryset=HIRAActivity.objects.select_related('group__hira_document'))
     hira_document_ids = serializers.SerializerMethodField()         # read-only: the documents they come from
-    hira_document = serializers.SerializerMethodField()             # DEPRECATED read-only, see get_hira_document
     hira = serializers.SerializerMethodField()                      # read-only layout for display and print
     highest_initial_category = serializers.SerializerMethodField()  # preview of the chain, before submit
     cancelled_by = UserBriefSerializer(read_only=True)
@@ -223,7 +215,7 @@ class PermitDetailSerializer(PermitListSerializer):
 
     class Meta(PermitListSerializer.Meta):
         fields = PermitListSerializer.Meta.fields + [
-            'hira_activity_ids', 'hira_document_ids', 'hira_document', 'hira', 'highest_initial_category',
+            'hira_activity_ids', 'hira_document_ids', 'hira', 'highest_initial_category',
             'work_start', 'work_end', 'equipment_used', 'person_in_charge', 'worker_count',
             'safety_areas', 'checklist', 'ppe', 'ppe_other',
             'approvals', 'approval_chain', 'mk_requests', 'photos', 'attachments', 'geo_stamps',
@@ -309,12 +301,6 @@ class PermitDetailSerializer(PermitListSerializer):
 
     def get_hira_document_ids(self, obj):
         return sorted({a.group.hira_document_id for a in obj.hira_activities.all()})
-
-    def get_hira_document(self, obj):
-        """Deprecated, for screens built before 9 Nov: the document id when every ticked activity comes
-        from one document, else null. Ignored on input. Use hira_document_ids."""
-        ids = self.get_hira_document_ids(obj)
-        return ids[0] if len(ids) == 1 else None
 
     def get_highest_initial_category(self, obj):
         activities = list(obj.hira_activities.all())

@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from audit.labels import resource_label, resource_title
 from . import queues
 
-DEFAULT_LIMIT, MAX_LIMIT = 10, 50
+DEFAULT_LIMIT, MAX_LIMIT =  10, 50
 
 
 def _limit(request):
