@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import timedelta
-from decouple import config
+from decouple import config, Csv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -120,7 +120,7 @@ MK_OTP_COOLDOWN_SECONDS = 60      # between two "send code" requests
 MK_OTP_MAX_SENDS = 5              # codes per link; then HSE has to issue a new link
 MK_OTP_MAX_ATTEMPTS = 5           # wrong tries per code
 
-CORS_ALLOW_ALL_ORIGINS = True  # TODO: restrict to frontend domain in production
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -140,3 +140,10 @@ SIMPLE_JWT = {
 }
 
 HIRA_FORM_REVISION = 3
+
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SECURE_REDIRECT_EXEMPT = [r'^healthz/$']
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
